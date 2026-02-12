@@ -1,17 +1,39 @@
 use std::{
     ops::Range,
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
 use gpui::{
-    point, px, quad, App, BorderStyle, Bounds, CursorStyle, Edges, Element, ElementId,
+    point, px, quad, App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId,
     GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
-    LayoutId, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyledText, TextLayout,
-    Window,
+    LayoutId, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, SharedString, Size,
+    StyledText, TextLayout, Window,
 };
 
-use crate::{global_state::GlobalState, input::Selection, text::node::LinkMark, ActiveTheme};
+use crate::{global_state::GlobalState, input::Selection, text::LinkClickFn, text::node::LinkMark, ActiveTheme};
+
+/// Inline image overlay — paints a cached image on top of invisible
+/// space-character placeholders at a given byte offset during the paint phase.
+pub(super) struct InlineOverlay {
+    /// The byte offset in the text buffer where the placeholder begins.
+    pub(super) offset: usize,
+    /// The byte length of the placeholder space characters in the text buffer.
+    pub(super) placeholder_len: usize,
+    /// The pre-fetched image data to paint.
+    pub(super) data: Arc<RenderImage>,
+    /// The size at which to paint the image.
+    pub(super) size: Size<Pixels>,
+}
+
+/// Maps a byte range in the display text to its original shortcode,
+/// used by `selected_text()` to produce correct copy/paste output.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct OverlayReplacement {
+    /// Byte range of the space placeholder in the display text.
+    pub(super) range: Range<usize>,
+    /// Original shortcode text (e.g. ":heart_eyes:").
+    pub(super) shortcode: SharedString,
+}
 
 /// A inline element used to render a inline text and support selectable.
 ///
@@ -19,9 +41,12 @@ use crate::{global_state::GlobalState, input::Selection, text::node::LinkMark, A
 pub(super) struct Inline {
     id: ElementId,
     text: SharedString,
-    links: Rc<Vec<(Range<usize>, LinkMark)>>,
+    links: Arc<Vec<(Range<usize>, LinkMark)>>,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     styled_text: StyledText,
+    link_click_handler: Option<Arc<LinkClickFn>>,
+    /// Inline image overlays to paint on top of transparent placeholder text.
+    overlays: Vec<InlineOverlay>,
 
     state: Arc<Mutex<InlineState>>,
 }
@@ -33,6 +58,9 @@ pub(crate) struct InlineState {
     /// The text that actually rendering, matched with selection.
     pub(super) text: SharedString,
     pub(super) selection: Option<Selection>,
+    /// Overlay replacement map: space placeholders → original shortcodes.
+    /// Used by `selected_text()` to produce correct copy/paste output.
+    pub(super) overlay_replacements: Vec<OverlayReplacement>,
 }
 
 impl InlineState {
@@ -48,14 +76,25 @@ impl Inline {
         state: Arc<Mutex<InlineState>>,
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
+        link_click_handler: Option<Arc<LinkClickFn>>,
+        overlays: Vec<InlineOverlay>,
+        overlay_replacements: Vec<OverlayReplacement>,
     ) -> Self {
-        let text = state.lock().unwrap().text.clone();
+        // Store overlay_replacements into shared InlineState so that
+        // `Paragraph::selected_text()` (which reads state externally) can
+        // map space placeholders back to original shortcodes for copy/paste.
+        let mut locked = state.lock().unwrap();
+        let text = locked.text.clone();
+        locked.overlay_replacements = overlay_replacements;
+        drop(locked);
         Self {
             id: id.into(),
-            links: Rc::new(links),
+            links: Arc::new(links),
             highlights,
             text: text.clone(),
             styled_text: StyledText::new(text),
+            link_click_handler,
+            overlays,
             state,
         }
     }
@@ -301,9 +340,61 @@ impl Element for Inline {
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
+        // Paint inline image overlays on top of invisible space placeholders.
+        // Each overlay corresponds to an emoji whose placeholder spaces occupy
+        // approximately the same pixel width as the emoji image.
+        if !self.overlays.is_empty() {
+            let line_height = text_layout.line_height();
+            for overlay in &self.overlays {
+                if let Some(start_pos) = text_layout.position_for_index(overlay.offset) {
+                    // Compute actual placeholder pixel width from layout
+                    let placeholder_end = overlay.offset + overlay.placeholder_len;
+                    let placeholder_width = text_layout
+                        .position_for_index(placeholder_end)
+                        .filter(|end_pos| end_pos.y == start_pos.y)
+                        .map(|end_pos| end_pos.x - start_pos.x)
+                        .unwrap_or(overlay.size.width);
+
+                    // Center the emoji image within the placeholder width
+                    let x_offset = (placeholder_width - overlay.size.width) / 2.0;
+                    let y_offset = (line_height - overlay.size.height) / 2.0;
+                    let overlay_bounds = Bounds {
+                        origin: point(
+                            start_pos.x + x_offset.max(px(0.)),
+                            start_pos.y + y_offset,
+                        ),
+                        size: overlay.size,
+                    };
+                    let _ = window.paint_image(
+                        overlay_bounds,
+                        Corners::default(),
+                        overlay.data.clone(),
+                        0,
+                        false,
+                    );
+                }
+            }
+        }
+
         // layout selections
         let (is_selectable, is_selection, selection) =
             self.layout_selections(&text_layout, window, cx);
+
+        // Snap selection to treat each emoji placeholder as a single atomic block.
+        // If the selection partially overlaps an overlay range, extend it to cover
+        // the entire placeholder so the emoji behaves as one selectable unit.
+        let selection = selection.map(|mut sel| {
+            for overlay in &self.overlays {
+                let range_start = overlay.offset;
+                let range_end = overlay.offset + overlay.placeholder_len;
+                // Check for partial overlap
+                if sel.end > range_start && sel.start < range_end {
+                    sel.start = sel.start.min(range_start);
+                    sel.end = sel.end.max(range_end);
+                }
+            }
+            sel
+        });
 
         state.selection = selection;
 
@@ -346,8 +437,9 @@ impl Element for Inline {
             window.on_mouse_event({
                 let links = self.links.clone();
                 let text_layout = text_layout.clone();
+                let link_click_handler = self.link_click_handler.clone();
 
-                move |event: &MouseUpEvent, phase, _, cx| {
+                move |event: &MouseUpEvent, phase, window, cx| {
                     if !bounds.contains(&event.position) || !phase.bubble() {
                         return;
                     }
@@ -356,7 +448,11 @@ impl Element for Inline {
                         Self::link_for_position(&text_layout, &links, event.position)
                     {
                         cx.stop_propagation();
-                        cx.open_url(&link.url);
+                        if let Some(handler) = &link_click_handler {
+                            handler(&link.url, window, cx);
+                        } else {
+                            cx.open_url(&link.url);
+                        }
                     }
                 }
             });

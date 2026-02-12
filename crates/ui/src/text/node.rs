@@ -6,9 +6,9 @@ use std::{
 
 use gpui::{
     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, Half, HighlightStyle,
-    InteractiveElement as _, IntoElement, Length, ObjectFit, ParentElement, SharedString,
-    SharedUri, StatefulInteractiveElement, Styled, StyledImage as _, Window, div, img,
-    prelude::FluentBuilder as _, px, relative, rems,
+    ImageSource, InteractiveElement as _, IntoElement, Length, ObjectFit, ParentElement,
+    SharedString, SharedUri, Size, StatefulInteractiveElement, Styled, StyledImage as _, Window,
+    div, img, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 use ropey::Rope;
@@ -17,9 +17,10 @@ use crate::{
     ActiveTheme as _, Icon, IconName, StyledExt, h_flex,
     highlighter::{HighlightTheme, SyntaxHighlighter},
     text::{
-        CodeBlockActionsFn,
+        CodeBlockActionsFn, LinkClickFn,
         document::NodeRenderOptions,
-        inline::{Inline, InlineState},
+        inline::{Inline, InlineOverlay, InlineState, OverlayReplacement},
+        inline_image::InlineImage,
     },
     tooltip::Tooltip,
     v_flex,
@@ -264,6 +265,10 @@ pub struct ImageNode {
     pub alt: Option<SharedString>,
     pub width: Option<DefiniteLength>,
     pub height: Option<DefiniteLength>,
+    /// Whether this image should render inline with text (e.g., emoji).
+    /// When true, the image alt text is inserted as transparent placeholder text
+    /// and the actual image is painted on top during the paint phase.
+    pub is_inline: bool,
 }
 
 impl ImageNode {
@@ -283,8 +288,27 @@ impl PartialEq for ImageNode {
             && self.alt == other.alt
             && self.width == other.width
             && self.height == other.height
+            && self.is_inline == other.is_inline
     }
 }
+
+/// Convert a `DefiniteLength` to `Pixels` if it is an absolute pixel value.
+pub(crate) fn length_to_px(len: DefiniteLength) -> Option<gpui::Pixels> {
+    match len {
+        DefiniteLength::Absolute(gpui::AbsoluteLength::Pixels(v)) => Some(v),
+        _ => None,
+    }
+}
+
+/// Default pixel size for emoji images when no explicit width/height is specified.
+const DEFAULT_EMOJI_SIZE: f32 = 20.0;
+
+/// Estimated space-character width as a fraction of the font's em size.
+///
+/// Proportional fonts typically have space widths in the 0.25–0.33 em range.
+/// We use 0.28 as a middle-ground estimate. For monospaced fonts (~0.6 em)
+/// this underestimates, but emoji are rarely used inside code blocks.
+const SPACE_WIDTH_EM_RATIO: f32 = 0.28;
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct InlineNode {
@@ -294,7 +318,18 @@ pub(crate) struct InlineNode {
     /// The text styles, each tuple contains the range of the text and the style.
     pub(crate) marks: Vec<(Range<usize>, TextMark)>,
 
+    /// Text selection state — written by the `Inline` element during paint.
+    ///
+    /// Note: for image nodes, when preceding text exists, this state may be
+    /// re-used by `Paragraph::render()` for the preceding text's `Inline` selection.
     state: Arc<Mutex<InlineState>>,
+
+    /// Image selection state — written by `InlineImage` during paint.
+    ///
+    /// Kept separate from `state` to avoid contention between the preceding
+    /// text `Inline` and the image `InlineImage` writing to the same selection.
+    /// Only present for image nodes.
+    image_state: Option<Arc<Mutex<InlineState>>>,
 }
 
 impl PartialEq for InlineNode {
@@ -310,11 +345,18 @@ impl InlineNode {
             image: None,
             marks: vec![],
             state: Arc::new(Mutex::new(InlineState::default())),
+            image_state: None,
         }
     }
 
     pub(crate) fn image(image: ImageNode) -> Self {
         let mut this = Self::new("");
+        // Create a separate image_state pre-filled with the alt text,
+        // so InlineImage can write selection and selected_text() returns it.
+        let alt_text = image.alt.clone().unwrap_or_default();
+        let img_state = Arc::new(Mutex::new(InlineState::default()));
+        img_state.lock().unwrap().set_text(alt_text);
+        this.image_state = Some(img_state);
         this.image = Some(image);
         this
     }
@@ -363,17 +405,40 @@ impl Paragraph {
         let mut text = String::new();
 
         for c in self.children.iter() {
+            // Text selection (written by Inline element)
             let state = c.state.lock().unwrap();
             if let Some(selection) = &state.selection {
                 let part_text = state.text.clone();
-                text.push_str(&part_text[selection.start..selection.end]);
+                let mut selected = part_text[selection.start..selection.end].to_string();
+                apply_overlay_replacements(
+                    &mut selected,
+                    &state.overlay_replacements,
+                    selection.start,
+                );
+                text.push_str(&selected);
+            }
+            drop(state);
+
+            // Image selection (written by InlineImage element) — alt text shortcode
+            if let Some(image_state) = &c.image_state {
+                let img_st = image_state.lock().unwrap();
+                if let Some(selection) = &img_st.selection {
+                    let part_text = img_st.text.clone();
+                    text.push_str(&part_text[selection.start..selection.end]);
+                }
             }
         }
 
         let state = self.state.lock().unwrap();
         if let Some(selection) = &state.selection {
             let all_text = state.text.clone();
-            text.push_str(&all_text[selection.start..selection.end]);
+            let mut selected = all_text[selection.start..selection.end].to_string();
+            apply_overlay_replacements(
+                &mut selected,
+                &state.overlay_replacements,
+                selection.start,
+            );
+            text.push_str(&selected);
         }
 
         text
@@ -421,6 +486,25 @@ pub(crate) struct TableRow {
 pub(crate) struct TableCell {
     pub children: Paragraph,
     pub width: Option<DefiniteLength>,
+}
+
+/// Replace space-character placeholders with their original shortcodes
+/// within the selected slice. Processes in reverse order to preserve byte offsets.
+fn apply_overlay_replacements(
+    selected: &mut String,
+    replacements: &[OverlayReplacement],
+    selection_start: usize,
+) {
+    for repl in replacements.iter().rev() {
+        if repl.range.start >= selection_start && repl.range.end <= selection_start + selected.len()
+        {
+            let local_start = repl.range.start - selection_start;
+            let local_end = repl.range.end - selection_start;
+            if local_end <= selected.len() {
+                selected.replace_range(local_start..local_end, &repl.shortcode);
+            }
+        }
+    }
 }
 
 impl Paragraph {
@@ -564,6 +648,9 @@ impl CodeBlock {
                         self.state.clone(),
                         vec![],
                         self.styles.clone(),
+                        None,
+                        vec![],
+                        vec![],
                     ))
                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
                         this.child(
@@ -591,6 +678,9 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) link_click_handler: Option<Arc<LinkClickFn>>,
+    /// Custom image loader for resolving URLs to pre-fetched image data.
+    pub(crate) image_loader: Option<Arc<super::ImageLoaderFn>>,
 }
 
 impl NodeContext {
@@ -610,7 +700,7 @@ impl Paragraph {
     fn render(
         &self,
         node_cx: &NodeContext,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
         let span = self.span;
@@ -621,7 +711,17 @@ impl Paragraph {
         let mut text = String::new();
         let mut highlights: Vec<(Range<usize>, HighlightStyle)> = vec![];
         let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
+        let mut inline_overlays: Vec<InlineOverlay> = vec![];
+        let mut overlay_replacements: Vec<OverlayReplacement> = vec![];
         let mut offset = 0;
+
+        // Estimate the pixel width of a space character at the current font size.
+        // Used to calculate how many spaces approximate an emoji's pixel width.
+        let font_size_px = window
+            .text_style()
+            .font_size
+            .to_pixels(window.rem_size());
+        let space_width_est = font_size_px * SPACE_WIDTH_EM_RATIO;
 
         let mut ix = 0;
         for inline_node in children {
@@ -629,46 +729,160 @@ impl Paragraph {
             text.push_str(&inline_node.text);
 
             if let Some(image) = &inline_node.image {
-                if text.len() > 0 {
-                    inline_node
-                        .state
-                        .lock()
-                        .unwrap()
-                        .set_text(text.clone().into());
-                    child_nodes.push(
-                        Inline::new(
-                            ix,
-                            inline_node.state.clone(),
-                            links.clone(),
-                            highlights.clone(),
-                        )
-                        .into_any_element(),
-                    );
-                }
-                child_nodes.push(
-                    img(image.url.clone())
+                if image.is_inline {
+                    // ── Inline emoji path ──
+                    // Instead of inserting the full shortcode (e.g. ":heart_eyes:"
+                    // which takes ~80px), we insert a calculated number of SPACE
+                    // characters whose total width approximates the emoji's pixel
+                    // width (e.g. 20px → ~5 spaces). This ensures:
+                    //   1. No width mismatch / huge gaps
+                    //   2. The overlay image aligns with the allocated space
+                    // The original shortcode is stored in overlay_replacements
+                    // so that copy/paste produces the correct text.
+                    let alt = image
+                        .alt
+                        .as_ref()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+
+                    let img_w = image
+                        .width
+                        .and_then(length_to_px)
+                        .unwrap_or(px(DEFAULT_EMOJI_SIZE));
+                    let img_h = image
+                        .height
+                        .and_then(length_to_px)
+                        .unwrap_or(px(DEFAULT_EMOJI_SIZE));
+
+                    // Calculate the number of spaces to approximate the emoji width.
+                    // Pixels supports Div: img_w / space_width_est → Pixels(ratio).
+                    let num_spaces = if space_width_est > px(0.) {
+                        let ratio: f32 = (img_w / space_width_est).into();
+                        ratio.ceil().max(1.0) as usize
+                    } else {
+                        4 // safe fallback
+                    };
+                    let placeholder = " ".repeat(num_spaces);
+
+                    let ph_start = text.len();
+                    text.push_str(&placeholder);
+                    let ph_end = text.len();
+
+                    // Make the space placeholder invisible via fade_out.
+                    // (transparent_black() doesn't work — Hsla::blend ignores alpha=0.)
+                    let invisible_highlight = HighlightStyle {
+                        fade_out: Some(1.0),
+                        ..Default::default()
+                    };
+                    highlights.push((ph_start..ph_end, invisible_highlight));
+
+                    // Store the replacement mapping: spaces → original shortcode
+                    if !alt.is_empty() {
+                        overlay_replacements.push(OverlayReplacement {
+                            range: ph_start..ph_end,
+                            shortcode: alt.into(),
+                        });
+                    }
+
+                    // If the image is cached, create an overlay to paint it.
+                    if let Some(render_image) = node_cx
+                        .image_loader
+                        .as_ref()
+                        .and_then(|loader| loader(image.url.as_ref()))
+                    {
+                        inline_overlays.push(InlineOverlay {
+                            offset: ph_start,
+                            placeholder_len: num_spaces, // 1 byte per ASCII space
+                            data: render_image,
+                            size: Size {
+                                width: img_w,
+                                height: img_h,
+                            },
+                        });
+                    }
+
+                    offset = ph_end;
+                    // Do NOT flush text / create InlineImage — continue accumulating.
+                } else {
+                    // ── Block image path (original logic) ──
+                    if !text.is_empty() {
+                        inline_node
+                            .state
+                            .lock()
+                            .unwrap()
+                            .set_text(text.clone().into());
+                        child_nodes.push(
+                            Inline::new(
+                                ix,
+                                inline_node.state.clone(),
+                                links.clone(),
+                                highlights.clone(),
+                                node_cx.link_click_handler.clone(),
+                                std::mem::take(&mut inline_overlays),
+                                std::mem::take(&mut overlay_replacements),
+                            )
+                            .into_any_element(),
+                        );
+                    }
+                    // Build image child element.
+                    // Prefer image_loader for custom sources (e.g., authenticated / CF-protected).
+                    // Falls back to default URL loading if not cached.
+                    let img_source: ImageSource =
+                        if let Some(loader) = &node_cx.image_loader {
+                            let url_str = image.url.as_ref();
+                            if let Some(cached) = loader(url_str) {
+                                ImageSource::Render(cached)
+                            } else {
+                                image.url.clone().into()
+                            }
+                        } else {
+                            image.url.clone().into()
+                        };
+                    let img_child = img(img_source)
                         .id(ix)
                         .object_fit(ObjectFit::Contain)
                         .max_w(relative(1.))
                         .when_some(image.width, |this, width| this.w(width))
+                        .when_some(image.height, |this, height| this.h(height))
                         .when_some(image.link.clone(), |this, link| {
                             let title = image.title();
+                            let handler = node_cx.link_click_handler.clone();
                             this.cursor_pointer()
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(title.clone()).build(window, cx)
                                 })
-                                .on_click(move |_, _, cx| {
+                                .on_click(move |_, window, cx| {
                                     cx.stop_propagation();
-                                    cx.open_url(&link.url);
+                                    if let Some(handler) = &handler {
+                                        handler(&link.url, window, cx);
+                                    } else {
+                                        cx.open_url(&link.url);
+                                    }
                                 })
                         })
-                        .into_any_element(),
-                );
+                        .into_any_element();
 
-                text.clear();
-                links.clear();
-                highlights.clear();
-                offset = 0;
+                    // Wrap with InlineImage so the image participates in selection (alt text → copy shortcode)
+                    if let Some(img_state) = &inline_node.image_state {
+                        let alt_text = img_state.lock().unwrap().text.clone();
+                        child_nodes.push(
+                            InlineImage::new(ix, alt_text, img_child, img_state.clone())
+                                .into_any_element(),
+                        );
+                    } else {
+                        // Fallback: no image_state, keep original behaviour
+                        child_nodes.push(img_child);
+                    }
+
+                    text.clear();
+                    links.clear();
+                    highlights.clear();
+                    // Already moved by std::mem::take above when text was non-empty;
+                    // clear defensively for the (unlikely) empty-text case.
+                    inline_overlays.clear();
+                    overlay_replacements.clear();
+                    offset = 0;
+                }
             } else {
                 let mut node_highlights = vec![];
                 for (range, style) in &inline_node.marks {
@@ -717,11 +931,21 @@ impl Paragraph {
             ix += 1;
         }
 
-        // Add the last text node
-        if text.len() > 0 {
+        // Add the last text node (may include accumulated inline emoji overlays)
+        if !text.is_empty() {
             self.state.lock().unwrap().set_text(text.into());
-            child_nodes
-                .push(Inline::new(ix, self.state.clone(), links, highlights).into_any_element());
+            child_nodes.push(
+                Inline::new(
+                    ix,
+                    self.state.clone(),
+                    links,
+                    highlights,
+                    node_cx.link_click_handler.clone(),
+                    std::mem::take(&mut inline_overlays),
+                    std::mem::take(&mut overlay_replacements),
+                )
+                .into_any_element(),
+            );
         }
 
         div().id(span.unwrap_or_default()).children(child_nodes)
@@ -1139,12 +1363,28 @@ impl BlockNode {
         };
 
         match self {
-            BlockNode::Root { children, .. } => div()
-                .id(("div", ix))
-                .children(children.into_iter().enumerate().map(move |(ix, node)| {
-                    node.render_block(NodeRenderOptions { ix, ..options }, node_cx, window, cx)
-                }))
-                .into_any_element(),
+            BlockNode::Root { children, .. } => {
+                let children_len = children.len();
+                // Root renders as a bare div with NO own margin. Its last child's
+                // margin is the effective bottom spacing of the entire Root. So we
+                // only suppress the last child's margin when the Root itself is last
+                // (`options.is_last`). This is critical for <p>-wrapped Paragraphs:
+                // each <p> creates Root{[Paragraph]}, and the single Paragraph must
+                // NOT be treated as is_last when the outer Root still has siblings.
+                let parent_is_last = options.is_last;
+                div()
+                    .id(("div", ix))
+                    .children(children.into_iter().enumerate().map(move |(ix, node)| {
+                        let is_last = (ix + 1 == children_len) && parent_is_last;
+                        node.render_block(
+                            NodeRenderOptions { ix, is_last, ..options },
+                            node_cx,
+                            window,
+                            cx,
+                        )
+                    }))
+                    .into_any_element()
+            }
             BlockNode::Paragraph(paragraph) => div()
                 .id(("p", ix))
                 .pb(mb)

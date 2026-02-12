@@ -17,7 +17,7 @@ use crate::{
     highlighter::HighlightTheme,
     input::{self, Copy},
     text::{
-        CodeBlockActionsFn, TextViewStyle,
+        CodeBlockActionsFn, LinkClickFn, TextViewStyle,
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
@@ -58,6 +58,8 @@ pub struct TextViewState {
     pub(super) scrollable: bool,
     pub(super) text_view_style: TextViewStyle,
     pub(super) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(super) link_click_handler: Option<Arc<LinkClickFn>>,
+    pub(super) image_loader: Option<Arc<super::ImageLoaderFn>>,
 
     pub(super) is_selecting: bool,
     /// The local (in TextView) position of the selection.
@@ -113,6 +115,8 @@ impl TextViewState {
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)),
             text_view_style: TextViewStyle::default(),
             code_block_actions: None,
+            link_click_handler: None,
+            image_loader: None,
             is_selecting: false,
             parsed_content: Default::default(),
             parsed_error: None,
@@ -278,6 +282,8 @@ impl Render for TextViewState {
         };
 
         node_cx.code_block_actions = self.code_block_actions.clone();
+        node_cx.link_click_handler = self.link_click_handler.clone();
+        node_cx.image_loader = self.image_loader.clone();
         node_cx.style = self.text_view_style.clone();
 
         v_flex()

@@ -191,16 +191,17 @@ where
                     return self.w.write_all(contents.as_bytes());
                 }
 
-                // Check if parent is whitespace preserving element or contains code (<script>, <style>)
+                // Check if any ancestor is a whitespace preserving element (e.g., <pre>)
+                // or if the direct parent contains code (<script>, <style>)
                 let (skip_collapse_whitespace, contains_code) =
                     ctx.as_ref().map_or((false, false), |ctx| {
-                        if let NodeData::Element { name, .. } = &ctx.parent.data {
-                            let name = name.local.as_ref();
-
-                            (preserve_whitespace(name), contains_code(name))
-                        } else {
-                            (false, false)
-                        }
+                        let contains_code =
+                            if let NodeData::Element { name, .. } = &ctx.parent.data {
+                                contains_code(name.local.as_ref())
+                            } else {
+                                false
+                            };
+                        (ancestor_preserves_whitespace(ctx), contains_code)
                     });
 
                 if skip_collapse_whitespace {
@@ -709,6 +710,19 @@ fn is_ascii_whitespace(c: char) -> bool {
 
 fn preserve_whitespace(name: &str) -> bool {
     matches!(name, "pre" | "textarea")
+}
+
+/// Walk up the ancestor chain to check if any ancestor preserves whitespace.
+/// This handles cases like `<pre><code>text</code></pre>` where the direct parent
+/// is `<code>` but the grandparent `<pre>` should preserve whitespace.
+fn ancestor_preserves_whitespace(ctx: &Context) -> bool {
+    if let NodeData::Element { name, .. } = &ctx.parent.data {
+        if preserve_whitespace(name.local.as_ref()) {
+            return true;
+        }
+    }
+    ctx.parent_context
+        .map_or(false, ancestor_preserves_whitespace)
 }
 
 fn contains_code(name: &str) -> bool {

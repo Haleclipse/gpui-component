@@ -12,8 +12,8 @@ use markup5ever_rcdom::{Node, NodeData, RcDom};
 
 use crate::text::document::ParsedDocument;
 use crate::text::node::{
-    self, BlockNode, ImageNode, InlineNode, LinkMark, NodeContext, Paragraph, Table, TableRow,
-    TextMark,
+    self, BlockNode, CodeBlock, ImageNode, InlineNode, LinkMark, NodeContext, Paragraph, Table,
+    TableRow, TextMark,
 };
 
 const BLOCK_ELEMENTS: [&str; 35] = [
@@ -101,6 +101,18 @@ fn attr_value(attrs: &RefCell<Vec<html5ever::Attribute>>, name: LocalName) -> Op
             None
         }
     })
+}
+
+/// Check if an element's class attribute contains an emoji class name.
+///
+/// Discourse marks emoji images with `class="emoji"` or `class="emoji-only"`.
+fn is_emoji_class(attrs: &RefCell<Vec<html5ever::Attribute>>) -> bool {
+    attr_value(attrs, local_name!("class"))
+        .map(|c| {
+            c.split_whitespace()
+                .any(|cls| cls == "emoji" || cls == "emoji-only")
+        })
+        .unwrap_or(false)
 }
 
 /// Get style properties to HashMap
@@ -337,6 +349,7 @@ fn parse_paragraph(
                     width,
                     height,
                     title: title.map(Into::into),
+                    is_inline: is_emoji_class(attrs),
                 });
             }
             _ => {
@@ -424,9 +437,6 @@ fn parse_node(
                 }
             }
             local_name!("img") => {
-                let mut children = vec![];
-                consume_paragraph(&mut children, paragraph);
-
                 let Some(src) = attr_value(attrs, local_name!("src")) else {
                     if cfg!(debug_assertions) {
                         tracing::warn!("image node missing src attribute");
@@ -437,25 +447,47 @@ fn parse_node(
                 let alt = attr_value(&attrs, local_name!("alt"));
                 let title = attr_value(&attrs, local_name!("title"));
                 let (width, height) = attr_width_height(&attrs);
+                let is_inline = is_emoji_class(attrs);
 
-                let mut paragraph = Paragraph::default();
-                paragraph.push_image(ImageNode {
-                    url: src.into(),
-                    link: None,
-                    title: title.map(Into::into),
-                    alt: alt.map(Into::into),
-                    width,
-                    height,
-                });
-
-                if children.len() > 0 {
-                    children.push(BlockNode::Paragraph(paragraph));
-                    Some(BlockNode::Root {
-                        children,
-                        span: None,
-                    })
+                if is_inline {
+                    // Inline emoji: accumulate into the current paragraph
+                    // so they flow with surrounding text instead of creating
+                    // separate block-level paragraphs.
+                    paragraph.push_image(ImageNode {
+                        url: src.into(),
+                        link: None,
+                        title: title.map(Into::into),
+                        alt: alt.map(Into::into),
+                        width,
+                        height,
+                        is_inline,
+                    });
+                    None
                 } else {
-                    Some(BlockNode::Paragraph(paragraph))
+                    // Block image: flush current paragraph, create a new one
+                    let mut children = vec![];
+                    consume_paragraph(&mut children, paragraph);
+
+                    let mut new_paragraph = Paragraph::default();
+                    new_paragraph.push_image(ImageNode {
+                        url: src.into(),
+                        link: None,
+                        title: title.map(Into::into),
+                        alt: alt.map(Into::into),
+                        width,
+                        height,
+                        is_inline,
+                    });
+
+                    if children.len() > 0 {
+                        children.push(BlockNode::Paragraph(new_paragraph));
+                        Some(BlockNode::Root {
+                            children,
+                            span: None,
+                        })
+                    } else {
+                        Some(BlockNode::Paragraph(new_paragraph))
+                    }
                 }
             }
             local_name!("ul") | local_name!("ol") => {
@@ -538,6 +570,44 @@ fn parse_node(
                     span: None,
                 })
             }
+            local_name!("pre") => {
+                let mut children = vec![];
+                consume_paragraph(&mut children, paragraph);
+
+                if let Some((code_text, lang)) = extract_pre_code(node, attrs) {
+                    let code_block = BlockNode::CodeBlock(CodeBlock::new(
+                        code_text.into(),
+                        lang.map(SharedString::from),
+                        &cx.style.highlight_theme,
+                        None::<node::Span>,
+                    ));
+                    if children.is_empty() {
+                        Some(code_block)
+                    } else {
+                        children.push(code_block);
+                        Some(BlockNode::Root {
+                            children,
+                            span: None,
+                        })
+                    }
+                } else {
+                    // Fallback: treat as generic block element
+                    for child in node.children.borrow().iter() {
+                        if let Some(child_node) = parse_node(child, paragraph, cx) {
+                            children.push(child_node);
+                        }
+                    }
+                    consume_paragraph(&mut children, paragraph);
+                    if children.is_empty() {
+                        None
+                    } else {
+                        Some(BlockNode::Root {
+                            children,
+                            span: None,
+                        })
+                    }
+                }
+            }
             local_name!("style") | local_name!("script") => None,
             _ => {
                 if BLOCK_ELEMENTS.contains(&name.local.trim()) {
@@ -614,6 +684,83 @@ fn consume_paragraph(children: &mut Vec<BlockNode>, paragraph: &mut Paragraph) {
     }
 
     children.push(BlockNode::Paragraph(paragraph.take()));
+}
+
+/// Extract code text and language from a `<pre>` element.
+///
+/// Handles patterns commonly produced by Discourse and other Markdown processors:
+/// - `<pre><code class="language-rust">code</code></pre>`
+/// - `<pre><code class="lang-rust">code</code></pre>`
+/// - `<pre><code>code</code></pre>` (no language)
+/// - `<pre>code</pre>` (no `<code>` wrapper)
+fn extract_pre_code(
+    node: &Rc<Node>,
+    _pre_attrs: &RefCell<Vec<html5ever::Attribute>>,
+) -> Option<(String, Option<String>)> {
+    // Look for a <code> child element
+    for child in node.children.borrow().iter() {
+        if let NodeData::Element {
+            ref name,
+            ref attrs,
+            ..
+        } = child.data
+        {
+            if name.local == local_name!("code") {
+                // Extract language from <code class="language-*"> or <code class="lang-*">
+                let lang = extract_code_language(attrs);
+
+                // Collect all text content from the <code> element
+                let text = collect_text_content(child);
+                if !text.is_empty() {
+                    return Some((text, lang));
+                }
+            }
+        }
+    }
+
+    // If no <code> child, collect text directly from <pre>
+    let text = collect_text_content(node);
+    if !text.is_empty() {
+        Some((text, None))
+    } else {
+        None
+    }
+}
+
+/// Extract language identifier from a `<code>` element's class attribute.
+///
+/// Recognises `class="language-*"` and `class="lang-*"` patterns.
+fn extract_code_language(attrs: &RefCell<Vec<html5ever::Attribute>>) -> Option<String> {
+    let class = attr_value(attrs, local_name!("class"))?;
+    for cls in class.split_whitespace() {
+        if let Some(lang) = cls.strip_prefix("language-") {
+            return Some(lang.to_string());
+        }
+        if let Some(lang) = cls.strip_prefix("lang-") {
+            return Some(lang.to_string());
+        }
+    }
+    None
+}
+
+/// Recursively collect all text content from a DOM node.
+fn collect_text_content(node: &Rc<Node>) -> String {
+    let mut text = String::new();
+    collect_text_recursive(node, &mut text);
+    text
+}
+
+fn collect_text_recursive(node: &Rc<Node>, text: &mut String) {
+    match &node.data {
+        NodeData::Text { contents } => {
+            text.push_str(&contents.borrow());
+        }
+        _ => {
+            for child in node.children.borrow().iter() {
+                collect_text_recursive(child, text);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -748,5 +895,83 @@ mod tests {
                 })]
             }
         );
+    }
+
+    #[test]
+    fn test_pre_code_block_with_language() {
+        // Discourse style: <pre><code class="lang-rust">
+        let html = r#"<pre><code class="lang-rust">fn main() {
+    println!("Hello");
+}</code></pre>"#;
+        let mut cx = NodeContext::default();
+        let doc = super::parse(html, &mut cx).unwrap();
+        // Should produce a CodeBlock
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            BlockNode::CodeBlock(cb) => {
+                assert_eq!(cb.lang(), Some("rust".into()));
+                assert_eq!(
+                    cb.code().as_ref(),
+                    "fn main() {\n    println!(\"Hello\");\n}"
+                );
+            }
+            other => panic!("Expected CodeBlock, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pre_code_block_language_prefix() {
+        // Standard Markdown style: <pre><code class="language-javascript">
+        let html = r#"<pre><code class="language-javascript">const x = 42;</code></pre>"#;
+        let mut cx = NodeContext::default();
+        let doc = super::parse(html, &mut cx).unwrap();
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            BlockNode::CodeBlock(cb) => {
+                assert_eq!(cb.lang(), Some("javascript".into()));
+                assert_eq!(cb.code().as_ref(), "const x = 42;");
+            }
+            other => panic!("Expected CodeBlock, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pre_code_block_no_language() {
+        // No language specified
+        let html = r#"<pre><code>plain code here</code></pre>"#;
+        let mut cx = NodeContext::default();
+        let doc = super::parse(html, &mut cx).unwrap();
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            BlockNode::CodeBlock(cb) => {
+                assert_eq!(cb.lang(), None);
+                assert_eq!(cb.code().as_ref(), "plain code here");
+            }
+            other => panic!("Expected CodeBlock, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pre_without_code() {
+        // <pre> without <code> wrapper
+        let html = r#"<pre>raw preformatted text</pre>"#;
+        let mut cx = NodeContext::default();
+        let doc = super::parse(html, &mut cx).unwrap();
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            BlockNode::CodeBlock(cb) => {
+                assert_eq!(cb.lang(), None);
+                assert_eq!(cb.code().as_ref(), "raw preformatted text");
+            }
+            other => panic!("Expected CodeBlock, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pre_code_to_markdown() {
+        let html = r#"<pre><code class="lang-rust">let x = 1;</code></pre>"#;
+        let mut cx = NodeContext::default();
+        let doc = super::parse(html, &mut cx).unwrap();
+        assert_eq!(doc.to_markdown(), "```rust\nlet x = 1;\n```");
     }
 }

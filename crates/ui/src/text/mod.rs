@@ -1,6 +1,7 @@
 mod document;
 mod format;
 mod inline;
+mod inline_image;
 mod node;
 mod state;
 mod style;
