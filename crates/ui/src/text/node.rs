@@ -757,7 +757,7 @@ impl Paragraph {
                     // Calculate the number of spaces to approximate the emoji width.
                     // Pixels supports Div: img_w / space_width_est → Pixels(ratio).
                     let num_spaces = if space_width_est > px(0.) {
-                        let ratio: f32 = (img_w / space_width_est).into();
+                        let ratio: f32 = img_w / space_width_est;
                         ratio.ceil().max(1.0) as usize
                     } else {
                         4 // safe fallback

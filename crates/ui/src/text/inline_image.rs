@@ -176,7 +176,7 @@ impl Element for InlineImage {
         // 3. Update shared state (read by Paragraph::selected_text())
         {
             let mut state = self.state.lock().unwrap();
-            state.selection = selection.clone();
+            state.selection = selection;
         }
 
         // 4. Set cursor style
