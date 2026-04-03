@@ -171,7 +171,7 @@ impl TabVariant {
     fn hovered(&self, selected: bool, cx: &App) -> TabStyle {
         match self {
             TabVariant::Tab => TabStyle {
-                fg: cx.theme().tab_foreground,
+                fg: cx.theme().tab_active_foreground,
                 bg: cx.theme().transparent,
                 borders: Edges {
                     left: px(1.),
@@ -194,7 +194,7 @@ impl TabVariant {
                 ..Default::default()
             },
             TabVariant::Segmented => TabStyle {
-                fg: cx.theme().tab_foreground,
+                fg: cx.theme().tab_active_foreground,
                 bg: cx.theme().transparent,
                 inner_bg: if selected {
                     cx.theme().background
@@ -204,7 +204,7 @@ impl TabVariant {
                 ..Default::default()
             },
             TabVariant::Underline => TabStyle {
-                fg: cx.theme().tab_foreground,
+                fg: cx.theme().tab_active_foreground,
                 bg: cx.theme().transparent,
                 inner_bg: cx.theme().transparent,
                 borders: Edges {
@@ -615,7 +615,6 @@ impl RenderOnce for Tab {
             .gap_1()
             .items_center()
             .flex_shrink_0()
-            .overflow_hidden()
             .h(height)
             .overflow_hidden()
             .text_color(tab_style.fg)
@@ -649,6 +648,7 @@ impl RenderOnce for Tab {
                     .flex_1()
                     .h(inner_height)
                     .line_height(relative(1.))
+                    .whitespace_nowrap()
                     .items_center()
                     .justify_center()
                     .overflow_hidden()

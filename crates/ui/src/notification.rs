@@ -13,7 +13,6 @@ use gpui::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use smol::Timer;
 
 use crate::{
     ActiveTheme as _, Anchor, Edges, Icon, IconName, Sizable as _, StyledExt, TITLE_BAR_HEIGHT,
@@ -244,7 +243,7 @@ impl Notification {
 
         // Dismiss the notification after 0.15s to show the animation.
         cx.spawn(async move |view, cx| {
-            Timer::after(Duration::from_secs_f32(0.15)).await;
+            cx.background_executor().timer(Duration::from_secs_f32(0.15)).await;
             cx.update(|cx| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -254,7 +253,7 @@ impl Notification {
                 }
             })
         })
-        .detach()
+        .detach();
     }
 
     /// Set the content of the notification.
@@ -345,6 +344,11 @@ impl Render for Notification {
                     on_click(event, window, cx);
                 }))
             })
+            .on_aux_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+                if event.is_middle_click() {
+                    view.dismiss(window, cx);
+                }
+            }))
             .with_animation(
                 ElementId::NamedInteger("slide-down".into(), closing as u64),
                 Animation::new(Duration::from_secs_f64(0.25))
@@ -461,7 +465,7 @@ impl NotificationList {
         if autohide {
             // Sleep for 5 seconds to autohide the notification
             cx.spawn_in(window, async move |_, cx| {
-                Timer::after(Duration::from_secs(5)).await;
+                cx.background_executor().timer(Duration::from_secs(5)).await;
 
                 if let Err(err) =
                     notification.update_in(cx, |note, window, cx| note.dismiss(window, cx))

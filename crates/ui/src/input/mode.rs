@@ -1,14 +1,22 @@
 use std::rc::Rc;
+use std::time::Duration;
 use std::{cell::RefCell, ops::Range};
 
-use gpui::{App, SharedString};
+use gpui::{App, SharedString, Task};
 use ropey::Rope;
-use tree_sitter::InputEdit;
 
-use super::text_wrapper::TextWrapper;
+use super::display_map::DisplayMap;
 use crate::highlighter::DiagnosticSet;
 use crate::highlighter::SyntaxHighlighter;
-use crate::input::{RopeExt as _, TabSize};
+use crate::input::{InputEdit, RopeExt as _, TabSize};
+
+#[allow(dead_code)]
+pub(super) struct PendingBackgroundParse {
+    pub highlighter: Rc<RefCell<Option<SyntaxHighlighter>>>,
+    pub parse_task: Rc<RefCell<Option<Task<()>>>>,
+    pub language: SharedString,
+    pub text: Rope,
+}
 
 #[derive(Clone)]
 pub(crate) enum InputMode {
@@ -33,8 +41,10 @@ pub(crate) enum InputMode {
         line_number: bool,
         language: SharedString,
         indent_guides: bool,
+        folding: bool,
         highlighter: Rc<RefCell<Option<SyntaxHighlighter>>>,
         diagnostics: DiagnosticSet,
+        parse_task: Rc<RefCell<Option<Task<()>>>>,
     },
 }
 
@@ -65,7 +75,9 @@ impl InputMode {
             highlighter: Rc::new(RefCell::new(None)),
             line_number: true,
             indent_guides: true,
+            folding: true,
             diagnostics: DiagnosticSet::new(&Rope::new()),
+            parse_task: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -95,6 +107,23 @@ impl InputMode {
     #[inline]
     pub(super) fn is_code_editor(&self) -> bool {
         matches!(self, InputMode::CodeEditor { .. })
+    }
+
+    /// Return true if the mode is code editor and `folding: true`, `multi_line: true`.
+    #[inline]
+    pub(crate) fn is_folding(&self) -> bool {
+        if cfg!(target_family = "wasm") {
+            return false;
+        }
+
+        matches!(
+            self,
+            InputMode::CodeEditor {
+                folding: true,
+                multi_line: true,
+                ..
+            }
+        )
     }
 
     #[inline]
@@ -129,12 +158,12 @@ impl InputMode {
         }
     }
 
-    pub(super) fn update_auto_grow(&mut self, text_wrapper: &TextWrapper) {
+    pub(super) fn update_auto_grow(&mut self, display_map: &DisplayMap) {
         if self.is_single_line() {
             return;
         }
 
-        let wrapped_lines = text_wrapper.len();
+        let wrapped_lines = display_map.wrap_row_count();
         self.set_rows(wrapped_lines);
     }
 
@@ -175,7 +204,6 @@ impl InputMode {
     }
 
     /// Return false if the mode is not [`InputMode::CodeEditor`].
-    #[allow(unused)]
     #[inline]
     pub(super) fn line_number(&self) -> bool {
         match self {
@@ -188,6 +216,11 @@ impl InputMode {
         }
     }
 
+    /// Update the syntax highlighter with new text.
+    ///
+    /// Returns `Some(PendingBackgroundParse)` when the synchronous parse
+    /// timed out and the caller should dispatch a background parse.
+    /// Returns `None` when parsing completed (or no highlighter is active).
     pub(super) fn update_highlighter(
         &mut self,
         selected_range: &Range<usize>,
@@ -195,25 +228,26 @@ impl InputMode {
         new_text: &str,
         force: bool,
         cx: &mut App,
-    ) {
+    ) -> Option<PendingBackgroundParse> {
         match &self {
             InputMode::CodeEditor {
                 language,
                 highlighter,
+                parse_task,
                 ..
             } => {
                 if !force && highlighter.borrow().is_some() {
-                    return;
+                    return None;
                 }
 
-                let mut highlighter = highlighter.borrow_mut();
-                if highlighter.is_none() {
+                let mut highlighter_ref = highlighter.borrow_mut();
+                if highlighter_ref.is_none() {
                     let new_highlighter = SyntaxHighlighter::new(language);
-                    highlighter.replace(new_highlighter);
+                    highlighter_ref.replace(new_highlighter);
                 }
 
-                let Some(highlighter) = highlighter.as_mut() else {
-                    return;
+                let Some(h) = highlighter_ref.as_mut() else {
+                    return None;
                 };
 
                 // When full text changed, the selected_range may be out of bound (The before version).
@@ -240,9 +274,25 @@ impl InputMode {
                     new_end_position: new_end_pos,
                 };
 
-                highlighter.update(Some(edit), text);
+                const SYNC_PARSE_TIMEOUT: Duration = Duration::from_millis(2);
+                let completed = h.update(Some(edit), text, Some(SYNC_PARSE_TIMEOUT));
+                if completed {
+                    // Sync parse succeeded, cancel any pending background parse.
+                    parse_task.borrow_mut().take();
+                    None
+                } else {
+                    // Timed out. Return the data needed for background parsing.
+                    let pending = PendingBackgroundParse {
+                        language: h.language().clone(),
+                        text: text.clone(),
+                        highlighter: highlighter.clone(),
+                        parse_task: parse_task.clone(),
+                    };
+                    drop(highlighter_ref);
+                    Some(pending)
+                }
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -257,6 +307,14 @@ impl InputMode {
     pub(super) fn diagnostics_mut(&mut self) -> Option<&mut DiagnosticSet> {
         match self {
             InputMode::CodeEditor { diagnostics, .. } => Some(diagnostics),
+            _ => None,
+        }
+    }
+
+    /// Get a reference to the highlighter (if available)
+    pub(super) fn highlighter(&self) -> Option<&Rc<RefCell<Option<SyntaxHighlighter>>>> {
+        match self {
+            InputMode::CodeEditor { highlighter, .. } => Some(highlighter),
             _ => None,
         }
     }
@@ -281,16 +339,19 @@ mod tests {
         assert_eq!(mode.has_indent_guides(), true);
         assert_eq!(mode.max_rows(), usize::MAX);
         assert_eq!(mode.min_rows(), 1);
+        assert_eq!(mode.is_folding(), true);
 
         let mode = InputMode::CodeEditor {
             multi_line: false,
             line_number: true,
             indent_guides: true,
+            folding: true,
             rows: 0,
             tab: Default::default(),
             language: "rust".into(),
             highlighter: Default::default(),
             diagnostics: DiagnosticSet::new(&Rope::new()),
+            parse_task: Default::default(),
         };
         assert_eq!(mode.is_code_editor(), true);
         assert_eq!(mode.is_multi_line(), false);
@@ -299,6 +360,7 @@ mod tests {
         assert_eq!(mode.has_indent_guides(), false);
         assert_eq!(mode.max_rows(), 1);
         assert_eq!(mode.min_rows(), 1);
+        assert_eq!(mode.is_folding(), false);
     }
 
     #[test]

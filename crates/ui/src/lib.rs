@@ -2,11 +2,12 @@ use gpui::{App, SharedString};
 use std::ops::Deref;
 
 mod anchored;
+mod async_util;
 mod element_ext;
 mod event;
 mod focus_trap;
 mod geometry;
-mod global_state;
+pub mod global_state;
 mod icon;
 mod index_path;
 #[cfg(any(feature = "inspector", debug_assertions))]
@@ -76,10 +77,12 @@ pub mod tree;
 
 pub use crate::Disableable;
 pub(crate) use anchored::*;
-pub use element_ext::ElementExt;
+pub use element_ext::*;
 pub use event::InteractiveElementExt;
 pub use focus_trap::FocusTrapElement;
 pub use geometry::*;
+pub use global_state::GlobalState;
+pub use gpui_component_macros::icon_named;
 pub use icon::*;
 pub use index_path::IndexPath;
 pub use input::{Rope, RopeExt, RopeLines};

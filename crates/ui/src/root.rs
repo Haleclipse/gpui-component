@@ -9,8 +9,8 @@ use crate::{
 };
 use gpui::{
     AnyView, App, AppContext, Context, DefiniteLength, Entity, FocusHandle, InteractiveElement,
-    IntoElement, KeyBinding, ParentElement as _, Render, StyleRefinement, Styled, WeakFocusHandle,
-    Window, actions, div, prelude::FluentBuilder as _,
+    IntoElement, KeyBinding, ParentElement as _, Pixels, Render, StyleRefinement, Styled,
+    WeakFocusHandle, Window, actions, div, prelude::FluentBuilder as _,
 };
 use std::{any::TypeId, rc::Rc};
 
@@ -28,13 +28,17 @@ pub(crate) fn init(cx: &mut App) {
 ///
 /// It is used to manage the Sheet, Dialog, and Notification.
 pub struct Root {
+    style: StyleRefinement,
+    view: AnyView,
     pub(crate) active_sheet: Option<ActiveSheet>,
     pub(crate) active_dialogs: Vec<ActiveDialog>,
     pub(super) focused_input: Option<Entity<InputState>>,
     pub notification: Entity<NotificationList>,
     sheet_size: Option<DefiniteLength>,
-    view: AnyView,
-    style: StyleRefinement,
+    window_shadow_size: Pixels,
+    /// The focus handle that will be restored after a dialog is closed with animation.
+    /// Used to handle rapid dialog opening/closing to maintain correct focus chain.
+    pending_focus_restore: Option<WeakFocusHandle>,
 }
 
 #[derive(Clone)]
@@ -72,14 +76,24 @@ impl Root {
     /// Create a new Root view.
     pub fn new(view: impl Into<AnyView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
+            style: StyleRefinement::default(),
+            view: view.into(),
             active_sheet: None,
             active_dialogs: Vec::new(),
             focused_input: None,
             notification: cx.new(|cx| NotificationList::new(window, cx)),
             sheet_size: None,
-            view: view.into(),
-            style: StyleRefinement::default(),
+            window_shadow_size: window_border::SHADOW_SIZE,
+            pending_focus_restore: None,
         }
+    }
+
+    /// Set the window border shadow size for Linux client-side decorations.
+    ///
+    /// Default: [`window_border::SHADOW_SIZE`]
+    pub fn window_shadow_size(mut self, size: impl Into<Pixels>) -> Self {
+        self.window_shadow_size = size.into();
+        self
     }
 
     pub fn update<F, R>(window: &mut Window, cx: &mut App, f: F) -> R
@@ -196,7 +210,7 @@ impl Root {
             .iter()
             .enumerate()
             .map(|(i, active_dialog)| {
-                let mut dialog = Dialog::new(window, cx);
+                let mut dialog = Dialog::new(cx);
 
                 dialog = (active_dialog.builder)(dialog, window, cx);
 
@@ -218,7 +232,7 @@ impl Root {
 
         if let Some(ix) = show_overlay_ix {
             if let Some(dialog) = dialogs.get_mut(ix) {
-                dialog.overlay_visible = true;
+                dialog.props.overlay_visible = true;
             }
         }
 
@@ -229,7 +243,14 @@ impl Root {
     where
         F: Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
     {
-        let previous_focused_handle = window.focused(cx).map(|h| h.downgrade());
+        let mut previous_focused_handle = window.focused(cx).map(|h| h.downgrade());
+
+        // Use pending focus restore if available to maintain correct focus chain
+        // when a new dialog is opened immediately after closing another dialog.
+        if let Some(pending_handle) = self.pending_focus_restore.take() {
+            previous_focused_handle = Some(pending_handle);
+        }
+
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
@@ -258,14 +279,23 @@ impl Root {
 
     pub(crate) fn defer_close_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
         if let Some(handle) = self.close_dialog_internal() {
-            window
-                .spawn(cx, async move |cx| {
-                    cx.background_executor().timer(*ANIMATION_DURATION).await;
-                    _ = cx.update(|window, cx| {
+            let dialogs_count = self.active_dialogs.len();
+
+            // Save for new dialogs opened during animation to maintain focus chain
+            self.pending_focus_restore = Some(handle.downgrade());
+
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(*ANIMATION_DURATION).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let current_dialogs_count = this.active_dialogs.len();
+                    // Only restore focus if no new dialogs were opened during animation
+                    if current_dialogs_count == dialogs_count {
                         window.focus(&handle, cx);
-                    });
-                })
-                .detach();
+                    }
+                    this.pending_focus_restore = None;
+                });
+            })
+            .detach();
         }
         cx.notify();
     }
@@ -292,7 +322,11 @@ impl Root {
     ) where
         F: Fn(Sheet, &mut Window, &mut App) -> Sheet + 'static,
     {
-        let previous_focused_handle = window.focused(cx).map(|h| h.downgrade());
+        let previous_focused_handle = self
+            .active_sheet
+            .take()
+            .and_then(|s| s.previous_focused_handle)
+            .or_else(|| window.focused(cx).map(|h| h.downgrade()));
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -434,7 +468,7 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(cx.theme().font_size);
 
-        window_border().child(
+        window_border().shadow_size(self.window_shadow_size).child(
             div()
                 .id("root")
                 .key_context(CONTEXT)

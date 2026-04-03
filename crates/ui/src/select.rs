@@ -1,9 +1,9 @@
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClickEvent, Context, DismissEvent, Edges, ElementId,
     Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
-    Length, ParentElement, Pixels, Render, RenderOnce, SharedString, StatefulInteractiveElement,
-    StyleRefinement, Styled, Subscription, Task, WeakEntity, Window, anchored, deferred, div,
-    prelude::FluentBuilder, px, rems,
+    Length, ParentElement, Pixels, Render, RenderOnce, SharedString,
+    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, WeakEntity, Window,
+    anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
 use rust_i18n::t;
 
@@ -11,8 +11,9 @@ use crate::{
     ActiveTheme, Disableable, ElementExt as _, Icon, IconName, IndexPath, Selectable, Sizable,
     Size, StyleSized, StyledExt,
     actions::{Cancel, Confirm, SelectDown, SelectUp},
+    global_state::GlobalState,
     h_flex,
-    input::clear_button,
+    input::{clear_button, input_style},
     list::{List, ListDelegate, ListState},
     v_flex,
 };
@@ -235,7 +236,7 @@ where
             }
 
             _ = state.update(cx, |this, cx| {
-                this.open = false;
+                this.set_open(false, cx);
                 this.focus(window, cx);
             });
         });
@@ -253,7 +254,7 @@ where
                 cx.emit(SelectEvent::Confirm(selected_value.clone()));
                 this.final_selected_index = selected_index;
                 this.selected_value = selected_value;
-                this.open = false;
+                this.set_open(false, cx);
                 this.focus(window, cx);
             });
         });
@@ -316,6 +317,7 @@ struct SelectOptions {
     search_placeholder: Option<SharedString>,
     empty: Option<AnyElement>,
     menu_width: Length,
+    menu_max_h: Length,
     disabled: bool,
     appearance: bool,
 }
@@ -331,6 +333,7 @@ impl Default for SelectOptions {
             title_prefix: None,
             empty: None,
             menu_width: Length::Auto,
+            menu_max_h: rems(20.).into(),
             disabled: false,
             appearance: true,
             search_placeholder: None,
@@ -670,13 +673,13 @@ where
             });
         }
 
-        self.open = false;
+        self.set_open(false, cx);
         cx.notify();
     }
 
     fn up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
-            self.open = true;
+            self.set_open(true, cx);
         }
 
         self.list.focus_handle(cx).focus(window, cx);
@@ -685,7 +688,7 @@ where
 
     fn down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
-            self.open = true;
+            self.set_open(true, cx);
         }
 
         self.list.focus_handle(cx).focus(window, cx);
@@ -697,7 +700,7 @@ where
         cx.propagate();
 
         if !self.open {
-            self.open = true;
+            self.set_open(true, cx);
             cx.notify();
         }
 
@@ -707,7 +710,7 @@ where
     fn toggle_menu(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
 
-        self.open = !self.open;
+        self.set_open(!self.open, cx);
         if self.open {
             self.list.focus_handle(cx).focus(window, cx);
         }
@@ -719,7 +722,17 @@ where
             cx.propagate();
         }
 
-        self.open = false;
+        self.set_open(false, cx);
+        cx.notify();
+    }
+
+    fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.open = open;
+        if self.open {
+            GlobalState::global_mut(cx).register_deferred_popover(&self.focus_handle)
+        } else {
+            GlobalState::global_mut(cx).unregister_deferred_popover(&self.focus_handle)
+        }
         cx.notify();
     }
 
@@ -784,6 +797,8 @@ where
         let outline_visible = self.open || is_focused && !self.options.disabled;
         let popup_radius = cx.theme().radius.min(px(8.));
 
+        let (bg, fg) = input_style(self.options.disabled, cx);
+
         self.list
             .update(cx, |list, cx| list.set_searchable(searchable, cx));
 
@@ -800,7 +815,9 @@ where
                     .border_1()
                     .border_color(cx.theme().transparent)
                     .when(self.options.appearance, |this| {
-                        this.bg(cx.theme().background)
+                        this.bg(bg)
+                            .text_color(fg)
+                            .when(self.options.disabled, |this| this.opacity(0.5))
                             .border_color(cx.theme().input)
                             .rounded(cx.theme().radius)
                             .when(cx.theme().shadow, |this| this.shadow_xs())
@@ -851,10 +868,7 @@ where
                                     None => Icon::new(IconName::ChevronDown),
                                 };
 
-                                this.child(icon.xsmall().text_color(match self.options.disabled {
-                                    true => cx.theme().muted_foreground.opacity(0.5),
-                                    false => cx.theme().muted_foreground,
-                                }))
+                                this.child(icon.xsmall().text_color(cx.theme().muted_foreground))
                             }),
                     )
                     .on_prepaint({
@@ -890,7 +904,7 @@ where
                                                     },
                                                 )
                                                 .with_size(self.options.size)
-                                                .max_h(rems(20.))
+                                                .max_h(self.options.menu_max_h)
                                                 .paddings(Edges::all(px(4.))),
                                         ),
                                 )
@@ -920,6 +934,12 @@ where
     /// Set the width of the dropdown menu, default: Length::Auto
     pub fn menu_width(mut self, width: impl Into<Length>) -> Self {
         self.options.menu_width = width.into();
+        self
+    }
+
+    /// Set the max height of the dropdown menu, default: 20rem
+    pub fn menu_max_h(mut self, max_h: impl Into<Length>) -> Self {
+        self.options.menu_max_h = max_h.into();
         self
     }
 

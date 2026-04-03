@@ -20,6 +20,8 @@ UI components for building fantastic desktop applications using [GPUI](https://g
 
 ## Showcase
 
+https://longbridge.github.io/gpui-component/gallery/
+
 Here is the first application: [Longbridge Pro](https://longbridge.com/desktop), built using GPUI Component.
 
 <img width="1763" alt="Image" src="https://github.com/user-attachments/assets/e1ecb9c3-2dd3-431e-bd97-5a819c30e551" />
@@ -68,9 +70,8 @@ fn main() {
                 let view = cx.new(|_| HelloWorld);
                 // This first level on the window, should be a Root.
                 cx.new(|cx| Root::new(view, window, cx))
-            })?;
-
-            Ok::<_, anyhow::Error>(())
+            })
+            .expect("Failed to open window");
         })
         .detach();
     });
@@ -85,6 +86,8 @@ The example uses [Lucide](https://lucide.dev) icons, but you can use any icons y
 
 ## Development
 
+### Desktop Gallery
+
 We have a gallery of applications built with GPUI Component.
 
 ```bash
@@ -92,6 +95,24 @@ cargo run
 ```
 
 More examples can be found in the `examples` directory. You can run them with `cargo run --example <example_name>`.
+
+### Web Gallery (WASM)
+
+You can also run the gallery in a web browser using WASM:
+
+```bash
+cd crates/story-web
+
+# Install dependencies (first time only)
+make install
+
+# Build and run development server
+make dev
+```
+
+The gallery will be available at http://localhost:3000
+
+For more details, see [crates/story-web/README.md](crates/story-web/README.md).
 
 Check out [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
 
@@ -105,7 +126,7 @@ Check out [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
 | Min Binary Size [^1]  | 12MB                           | 11MB               | 5M                    | 20MB [^2]                                         |
 | Cross-Platform        | Yes                            | Yes                | Yes                   | Yes                                               |
 | Documentation         | Simple                         | Simple             | Simple                | Good                                              |
-| Web                   | No                             | Yes                | Yes                   | Yes                                               |
+| Web                   | Yes (WASM)                     | Yes                | Yes                   | Yes                                               |
 | UI Style              | Modern                         | Basic              | Basic                 | Basic                                             |
 | CJK Support           | Yes                            | Yes                | Bad                   | Yes                                               |
 | Chart                 | Yes                            | No                 | No                    | Yes                                               |

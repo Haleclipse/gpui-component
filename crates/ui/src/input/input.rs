@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, InteractiveElement as _,
+    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla, InteractiveElement as _,
     IntoElement, IsZero, MouseButton, ParentElement as _, Rems, RenderOnce, StyleRefinement,
     Styled, TextAlign, Window, div, px, relative,
 };
@@ -10,12 +10,24 @@ use crate::input::clear_button;
 use crate::input::element::{LINE_NUMBER_RIGHT_MARGIN, RIGHT_MARGIN};
 use crate::scroll::Scrollbar;
 use crate::spinner::Spinner;
-use crate::{ActiveTheme, v_flex};
+use crate::{ActiveTheme, Colorize, v_flex};
 use crate::{IconName, Size};
 use crate::{Selectable, StyledExt, h_flex};
 use crate::{Sizable, StyleSized};
 
 use super::InputState;
+
+/// Returns `(background, foreground)` colors for input-like components.
+pub(crate) fn input_style(disabled: bool, cx: &App) -> (Hsla, Hsla) {
+    if disabled {
+        (
+            cx.theme().input.mix_oklab(cx.theme().transparent, 0.8),
+            cx.theme().muted_foreground,
+        )
+    } else {
+        (cx.theme().input_background(), cx.theme().foreground)
+    }
+}
 
 /// A text input element bind to an [`InputState`].
 #[derive(IntoElement)]
@@ -260,14 +272,11 @@ impl RenderOnce for Input {
             _ => px(6.),
         };
 
-        let bg = if state.disabled {
-            cx.theme().muted
+        let (bg, _) = input_style(state.disabled, cx);
+        let bg = if state.mode.is_code_editor() {
+            cx.theme().editor_background()
         } else {
-            if state.mode.is_code_editor() {
-                cx.theme().editor_background()
-            } else {
-                cx.theme().background
-            }
+            bg
         };
 
         let prefix = self.prefix;
@@ -315,15 +324,19 @@ impl RenderOnce for Input {
             .on_action(window.listener_for(&self.state, InputState::select_left))
             .on_action(window.listener_for(&self.state, InputState::select_right))
             .when(state.mode.is_multi_line(), |this| {
-                this.on_action(window.listener_for(&self.state, InputState::up))
+                let result = this
+                    .on_action(window.listener_for(&self.state, InputState::up))
                     .on_action(window.listener_for(&self.state, InputState::down))
                     .on_action(window.listener_for(&self.state, InputState::select_up))
                     .on_action(window.listener_for(&self.state, InputState::select_down))
                     .on_action(window.listener_for(&self.state, InputState::page_up))
-                    .on_action(window.listener_for(&self.state, InputState::page_down))
-                    .on_action(
-                        window.listener_for(&self.state, InputState::on_action_go_to_definition),
-                    )
+                    .on_action(window.listener_for(&self.state, InputState::page_down));
+
+                let result = result.on_action(
+                    window.listener_for(&self.state, InputState::on_action_go_to_definition),
+                );
+
+                result
             })
             .on_action(window.listener_for(&self.state, InputState::select_all))
             .on_action(window.listener_for(&self.state, InputState::select_to_start_of_line))
@@ -366,7 +379,7 @@ impl RenderOnce for Input {
             .input_py(self.size)
             .input_h(self.size)
             .input_text_size(self.size)
-            .cursor_text()
+            .when(!self.disabled, |this| this.cursor_text())
             .items_center()
             .when(state.mode.is_multi_line(), |this| {
                 this.h_auto()
@@ -374,6 +387,7 @@ impl RenderOnce for Input {
             })
             .when(self.appearance, |this| {
                 this.bg(bg)
+                    .when(self.disabled, |this| this.opacity(0.5))
                     .rounded(cx.theme().radius)
                     .when(self.bordered, |this| {
                         this.border_color(cx.theme().input)
@@ -406,7 +420,6 @@ impl RenderOnce for Input {
                     h_flex()
                         .id("suffix")
                         .gap(gap_x)
-                        .when(self.appearance, |this| this.bg(bg))
                         .items_center()
                         .when(state.loading, |this| {
                             this.child(Spinner::new().color(cx.theme().muted_foreground))

@@ -205,7 +205,7 @@ impl Render for MenuStory {
                                     .submenu("Links", window, cx, |menu, _, _| {
                                         menu.link_with_icon(
                                             "GPUI Component",
-                                            IconName::GitHub,
+                                            IconName::Github,
                                             "https://github.com/longbridge/gpui-component",
                                         )
                                         .separator()
@@ -232,7 +232,7 @@ impl Render for MenuStory {
                             .items_center()
                             .justify_center()
                             .min_h_20()
-                            .rounded_lg()
+                            .rounded(cx.theme().radius_lg)
                             .border_2()
                             .border_dashed()
                             .border_color(cx.theme().border)
@@ -287,7 +287,7 @@ impl Render for MenuStory {
                             .items_center()
                             .justify_center()
                             .min_h_20()
-                            .rounded_lg()
+                            .rounded(cx.theme().radius_lg)
                             .border_2()
                             .border_dashed()
                             .border_color(cx.theme().border)
@@ -312,7 +312,7 @@ impl Render for MenuStory {
                             .items_center()
                             .justify_center()
                             .min_h_20()
-                            .rounded_lg()
+                            .rounded(cx.theme().radius_lg)
                             .border_2()
                             .border_dashed()
                             .border_color(cx.theme().border)

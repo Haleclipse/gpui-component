@@ -3,8 +3,9 @@ use std::{
     ops::Deref,
     panic::Location,
     rc::Rc,
-    time::{Duration, Instant},
 };
+
+use instant::{Duration, Instant};
 
 use crate::{ActiveTheme, AxisExt};
 use gpui::{
@@ -78,7 +79,7 @@ impl ScrollbarHandle for ScrollHandle {
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        self.max_offset() + self.bounds().size
+        (self.max_offset() + self.bounds().size.into()).into()
     }
 }
 
@@ -93,7 +94,7 @@ impl ScrollbarHandle for UniformListScrollHandle {
 
     fn content_size(&self) -> Size<Pixels> {
         let base_handle = &self.0.borrow().base_handle;
-        base_handle.max_offset() + base_handle.bounds().size
+        (base_handle.max_offset() + base_handle.bounds().size.into()).into()
     }
 }
 
@@ -107,7 +108,7 @@ impl ScrollbarHandle for ListState {
     }
 
     fn content_size(&self) -> Size<Pixels> {
-        self.viewport_bounds().size + self.max_offset_for_scrollbar()
+        self.viewport_bounds().size + self.max_offset_for_scrollbar().into()
     }
 
     fn start_drag(&self) {
@@ -183,7 +184,7 @@ impl ScrollbarStateInner {
         let mut state = *self;
         state.hovered_axis = axis;
         if axis.is_some() {
-            state.last_scroll_time = Some(std::time::Instant::now());
+            state.last_scroll_time = Some(Instant::now());
         }
         state
     }
@@ -193,7 +194,7 @@ impl ScrollbarStateInner {
         state.hovered_on_thumb = axis;
         if self.is_scrollbar_visible() {
             if axis.is_some() {
-                state.last_scroll_time = Some(std::time::Instant::now());
+                state.last_scroll_time = Some(Instant::now());
             }
         }
         state

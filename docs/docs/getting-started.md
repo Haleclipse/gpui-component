@@ -56,7 +56,7 @@ impl Render for HelloWorld {
 }
 
 fn main() {
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
@@ -67,9 +67,8 @@ fn main() {
                 let view = cx.new(|_| HelloWorld);
                 // This first level on the window, should be a Root.
                 cx.new(|cx| Root::new(view, window, cx))
-            })?;
-
-            Ok::<_, anyhow::Error>(())
+            })
+            .expect("Failed to open window");
         })
         .detach();
     });
@@ -192,7 +191,7 @@ Explore the component documentation to learn more about each component:
 - [Button](./components/button) - Interactive button component
 - [Input](./components/input) - Text input with validation
 - [Dialog](./components/dialog) - Dialog and modal windows
-- [Table](./components/table) - High-performance data tables
+- [DataTable](./components/data-table) - High-performance data tables
 - [More components...](./components/index)
 
 ## Development

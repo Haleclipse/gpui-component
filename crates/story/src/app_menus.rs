@@ -1,5 +1,7 @@
 use gpui::{App, Entity, Menu, MenuItem, SharedString};
-use gpui_component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry, menu::AppMenuBar};
+use gpui_component::{
+    ActiveTheme as _, GlobalState, Theme, ThemeMode, ThemeRegistry, menu::AppMenuBar,
+};
 
 use crate::{
     About, Open, Quit, SelectLocale, ToggleSearch,
@@ -34,8 +36,22 @@ pub fn init(title: impl Into<SharedString>, cx: &mut App) -> Entity<AppMenuBar> 
 }
 
 fn update_app_menu(title: impl Into<SharedString>, app_menu_bar: Entity<AppMenuBar>, cx: &mut App) {
-    let mode = cx.theme().mode;
-    cx.set_menus(vec![
+    let title: SharedString = title.into();
+
+    cx.set_menus(build_menus(title.clone(), cx));
+    let menus = build_menus(title, cx)
+        .into_iter()
+        .map(|menu| menu.owned())
+        .collect();
+    GlobalState::global_mut(cx).set_app_menus(menus);
+
+    app_menu_bar.update(cx, |menu_bar, cx| {
+        menu_bar.reload(cx);
+    })
+}
+
+fn build_menus(title: impl Into<SharedString>, cx: &App) -> Vec<Menu> {
+    vec![
         Menu {
             name: title.into(),
             items: vec![
@@ -47,16 +63,18 @@ fn update_app_menu(title: impl Into<SharedString>, app_menu_bar: Entity<AppMenuB
                     name: "Appearance".into(),
                     items: vec![
                         MenuItem::action("Light", SwitchThemeMode(ThemeMode::Light))
-                            .checked(!mode.is_dark()),
+                            .checked(!cx.theme().mode.is_dark()),
                         MenuItem::action("Dark", SwitchThemeMode(ThemeMode::Dark))
-                            .checked(mode.is_dark()),
+                            .checked(cx.theme().mode.is_dark()),
                     ],
+                    disabled: false,
                 }),
                 theme_menu(cx),
                 language_menu(cx),
                 MenuItem::Separator,
                 MenuItem::action("Quit", Quit),
             ],
+            disabled: false,
         },
         Menu {
             name: "Edit".into(),
@@ -82,20 +100,23 @@ fn update_app_menu(title: impl Into<SharedString>, app_menu_bar: Entity<AppMenuB
                 MenuItem::separator(),
                 MenuItem::action("Select All", gpui_component::input::SelectAll),
             ],
+            disabled: false,
         },
         Menu {
             name: "Window".into(),
             items: vec![MenuItem::action("Toggle Search", ToggleSearch)],
+            disabled: false,
         },
         Menu {
             name: "Help".into(),
-            items: vec![MenuItem::action("Open Website", Open)],
+            items: vec![
+                MenuItem::action("Documentation", Open).disabled(true),
+                MenuItem::separator(),
+                MenuItem::action("Open Website", Open),
+            ],
+            disabled: false,
         },
-    ]);
-
-    app_menu_bar.update(cx, |menu_bar, cx| {
-        menu_bar.reload(cx);
-    })
+    ]
 }
 
 fn language_menu(_: &App) -> MenuItem {
@@ -106,6 +127,7 @@ fn language_menu(_: &App) -> MenuItem {
             MenuItem::action("English", SelectLocale("en".into())).checked(locale == "en"),
             MenuItem::action("简体中文", SelectLocale("zh-CN".into())).checked(locale == "zh-CN"),
         ],
+        disabled: false,
     })
 }
 
@@ -122,5 +144,6 @@ fn theme_menu(cx: &App) -> MenuItem {
                     .checked(checked)
             })
             .collect(),
+        disabled: false,
     })
 }

@@ -79,7 +79,7 @@ impl Render for HelloWorld {
 }
 
 fn main() {
-    let app = Application::new().with_assets(Assets);
+    let app = gpui_platform::application().with_assets(Assets);
 
     app.run(move |cx| {
         gpui_component::init(cx);
@@ -95,9 +95,8 @@ fn main() {
                     // This first level on the window, should be a Root.
                     cx.new(|cx| Root::new(view, window, cx))
                 },
-            )?;
-
-            Ok::<_, anyhow::Error>(())
+            )
+            .expect("Failed to open window");
         })
         .detach();
     });

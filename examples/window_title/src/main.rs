@@ -1,7 +1,8 @@
 use gpui::*;
 use gpui_component::{
+    Root, TitleBar,
     button::{Button, ButtonVariants},
-    h_flex, v_flex, Root, TitleBar,
+    h_flex, v_flex,
 };
 
 pub struct Example;
@@ -39,7 +40,7 @@ impl Render for Example {
 }
 
 fn main() {
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
     app.run(move |cx| {
         gpui_component::init(cx);
@@ -54,9 +55,8 @@ fn main() {
             cx.open_window(window_options, |window, cx| {
                 let view = cx.new(|_| Example);
                 cx.new(|cx| Root::new(view, window, cx))
-            })?;
-
-            Ok::<_, anyhow::Error>(())
+            })
+            .expect("Failed to open window");
         })
         .detach();
     });

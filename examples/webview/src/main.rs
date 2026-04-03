@@ -135,7 +135,7 @@ fn main() {
         std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "true");
     }
 
-    Application::new().run(move |cx| {
+    gpui_platform::application().run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
 
@@ -143,9 +143,8 @@ fn main() {
             cx.open_window(WindowOptions::default(), |window, cx| {
                 let view = Example::new(window, cx);
                 cx.new(|cx| Root::new(view, window, cx))
-            })?;
-
-            Ok::<_, anyhow::Error>(())
+            })
+            .expect("Failed to open window");
         })
         .detach();
     });

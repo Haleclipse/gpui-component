@@ -57,8 +57,6 @@ impl ParsedDocument {
         window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
-        let options = NodeRenderOptions::default();
-
         let Some(list_state) = list_state else {
             let blocks_len = self.blocks.len();
             return div()
@@ -66,12 +64,21 @@ impl ParsedDocument {
                 .children(self.blocks.iter().enumerate().map(move |(ix, node)| {
                     let is_last = ix + 1 == blocks_len;
                     node.render_block(
-                        NodeRenderOptions { ix, is_last, ..options },
+                        NodeRenderOptions {
+                            ix,
+                            is_last,
+                            ..Default::default()
+                        },
                         node_cx,
                         window,
                         cx,
                     )
                 }));
+        };
+
+        let options = NodeRenderOptions {
+            is_last: true,
+            ..Default::default()
         };
 
         let blocks = &self.blocks;

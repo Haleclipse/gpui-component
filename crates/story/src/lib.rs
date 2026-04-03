@@ -14,16 +14,19 @@ use gpui_component::{
     menu::PopupMenu,
     notification::Notification,
     scroll::{ScrollableElement as _, ScrollbarShow},
+    text::markdown,
     v_flex,
 };
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 mod app_menus;
+mod embedded_themes;
+mod gallery;
 mod stories;
 mod themes;
 mod title_bar;
 pub use crate::title_bar::AppTitleBar;
+pub use gallery::Gallery;
 pub use stories::*;
 
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
@@ -136,12 +139,10 @@ pub fn create_new_window_with_size<F, E>(
             })
             .expect("failed to open window");
 
-        window
-            .update(cx, |_, window, _| {
-                window.activate_window();
-                window.set_window_title(&title);
-            })
-            .expect("failed to update window");
+        window.update(cx, |_, window, _| {
+            window.activate_window();
+            window.set_window_title(&title);
+        })?;
 
         Ok::<_, anyhow::Error>(())
     })
@@ -151,23 +152,54 @@ pub fn create_new_window_with_size<F, E>(
 impl Global for AppState {}
 
 pub fn init(cx: &mut App) {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("gpui_component=trace".parse().unwrap()),
-        )
-        .init();
+    // Try to initialize tracing subscriber, but ignore if already initialized
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer())
+            .with(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive("gpui_component=trace".parse().unwrap()),
+            )
+            .try_init();
+    }
+
+    // For WASM, use a subscriber without time support
+    #[cfg(target_family = "wasm")]
+    {
+        use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().without_time())
+            .with(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive("gpui_component=trace".parse().unwrap()),
+            )
+            .try_init();
+    }
 
     gpui_component::init(cx);
     AppState::init(cx);
     themes::init(cx);
     stories::init(cx);
 
-    let http_client = std::sync::Arc::new(
-        reqwest_client::ReqwestClient::user_agent("gpui-component/story").unwrap(),
-    );
-    cx.set_http_client(http_client);
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let http_client =
+            reqwest_client::ReqwestClient::user_agent("gpui-component/story").unwrap();
+        cx.set_http_client(std::sync::Arc::new(http_client));
+    }
+
+    #[cfg(target_family = "wasm")]
+    {
+        // Safety: the web examples run single-threaded; the client is
+        // created and used exclusively on the main thread.
+        let http_client = unsafe {
+            gpui_web::FetchHttpClient::with_user_agent("gpui-component/story")
+                .expect("failed to create FetchHttpClient")
+        };
+        cx.set_http_client(std::sync::Arc::new(http_client));
+    }
 
     cx.bind_keys([
         KeyBinding::new("/", ToggleSearch, None),
@@ -189,12 +221,16 @@ pub fn init(cx: &mut App) {
         if let Some(window) = cx.active_window().and_then(|w| w.downcast::<Root>()) {
             cx.defer(move |cx| {
                 window
-                    .update(cx, |root, window, cx| {
-                        root.push_notification(
-                            "GPUI Component Storybook\nVersion 0.1.0",
-                            window,
-                            cx,
-                        );
+                    .update(cx, |_, window, cx| {
+                        window.defer(cx, |window, cx| {
+                            window.open_alert_dialog(cx, |alert, _, _| {
+                                alert.title("About").description(markdown(
+                                    "GPUI Component Storybook\n\n\
+                                    Version 0.1.0\n\n\
+                                    https://longbridge.github.io/gpui-component",
+                                ))
+                            });
+                        });
                     })
                     .unwrap();
             });
@@ -317,10 +353,10 @@ pub(crate) fn section(title: impl Into<SharedString>) -> StorySection {
         title: title.into(),
         sub_title: vec![],
         base: h_flex()
+            .w_full()
             .flex_wrap()
             .justify_center()
             .items_center()
-            .w_full()
             .gap_4(),
         children: vec![],
     }
@@ -470,6 +506,7 @@ impl StoryState {
             "ResizableStory" => story!(ResizableStory),
             "ScrollbarStory" => story!(ScrollbarStory),
             "SwitchStory" => story!(SwitchStory),
+            "DataTableStory" => story!(DataTableStory),
             "TableStory" => story!(TableStory),
             "LabelStory" => story!(LabelStory),
             "TooltipStory" => story!(TooltipStory),
@@ -590,10 +627,10 @@ impl Render for StoryContainer {
     }
 }
 
-struct StoryRoot {
-    focus_handle: FocusHandle,
-    title_bar: Entity<AppTitleBar>,
-    view: AnyView,
+pub struct StoryRoot {
+    pub(crate) focus_handle: FocusHandle,
+    pub(crate) title_bar: Entity<AppTitleBar>,
+    pub(crate) view: AnyView,
 }
 
 impl StoryRoot {

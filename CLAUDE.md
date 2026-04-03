@@ -10,6 +10,7 @@ This is a Rust workspace project with the following main crates:
 
 - `crates/ui` - Core UI component library (published as `gpui-component`)
 - `crates/story` - Gallery application for showcasing and testing components
+- `crates/story-web` - Web version of the story gallery (using WebAssembly)
 - `crates/macros` - Procedural macros (`IntoPlot` derive)
 - `crates/assets` - Static assets
 - `crates/webview` - WebView component support
@@ -86,8 +87,8 @@ fn main() {
                 let view = cx.new(|_| MyView);
                 // The first level view in a window must be a Root
                 cx.new(|cx| Root::new(view, window, cx))
-            })?;
-            Ok::<_, anyhow::Error>(())
+            })
+            .expect("Failed to open window");
         }).detach();
     });
 }

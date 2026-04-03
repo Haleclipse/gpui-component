@@ -79,7 +79,10 @@ impl InlineImage {
             return (is_selectable, None);
         }
 
-        let selection_bounds = text_view_state.selection_bounds();
+        let Some((sel_start, sel_end)) = text_view_state.selection_points() else {
+            return (is_selectable, None);
+        };
+        let selection_bounds = Bounds::from_corners(sel_start, sel_end);
 
         // Image bounds intersect selection rect → select entire alt text
         if image_bounds.intersects(&selection_bounds) {

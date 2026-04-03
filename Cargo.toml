@@ -3,6 +3,7 @@ default-members = ["crates/ui", "crates/story", "crates/assets"]
 members = [
     "crates/macros",
     "crates/story",
+    "crates/story-web",
     "crates/ui",
     "crates/assets",
     "crates/webview",
@@ -28,7 +29,10 @@ gpui-component-assets = { path = "crates/assets", version = "0.5.1" }
 story = { path = "crates/story" }
 
 gpui = { git = "https://github.com/zed-industries/zed" }
-gpui-macros = "0.2.2"
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui_web = { git = "https://github.com/zed-industries/zed" }
+gpui_macros = { git = "https://github.com/zed-industries/zed" }
+reqwest_client = { git = "https://github.com/zed-industries/zed" }
 sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
 # reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
 reqwest = { git = "https://github.com/zed-industries/reqwest.git", rev = "c15662463bda39148ba154100dd44d3fba5873a4", default-features = false, features = [
@@ -58,6 +62,9 @@ serde_repr = "0.1"
 smallvec = "1"
 smol = "2"
 tracing = "0.1.41"
+wasm-bindgen = "0.2.113"
+# Use errno stub for WASM
+errno = { version = "0.3.14", default-features = false }
 
 [workspace.dependencies.windows]
 features = ["Wdk", "Wdk_System", "Wdk_System_SystemServices"]
@@ -78,6 +85,9 @@ single_range_in_vec_init = "allow"
 style = { level = "allow", priority = -1 }
 todo = "deny"
 type_complexity = "allow"
+# Temporarily allow this until we can migrate to the new APIs.
+# https://github.com/longbridge/gpui-component/pull/2149
+useless_conversion = "allow"
 
 [profile.dev]
 codegen-units = 16
@@ -91,7 +101,8 @@ taffy = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
 smol = { opt-level = 3 }
 gpui = { opt-level = 3 }
-gpui-macros = { opt-level = 3 }
+gpui_platform = { opt-level = 3 }
+gpui_macros = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 sum_tree = { opt-level = 3 }
 ropey = { opt-level = 3 }
@@ -105,3 +116,11 @@ files.extend-exclude = ["**/fixtures/*"]
 
 [workspace.metadata.typos.default.extend-identifiers]
 consts = "consts"
+
+[workspace.metadata.cargo-machete]
+ignored = ["log", "anyhow", "serde"]
+
+# Patches for WASM compatibility
+[patch.crates-io]
+# Use stacker's psm version which may have better WASM support
+psm = { git = "https://github.com/rust-lang/stacker", branch = "master" }

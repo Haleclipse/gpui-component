@@ -241,6 +241,16 @@ impl TextMark {
         self.link = Some(link.into());
         self
     }
+
+    pub fn merge(&mut self, other: TextMark) {
+        self.bold |= other.bold;
+        self.italic |= other.italic;
+        self.strikethrough |= other.strikethrough;
+        self.code |= other.code;
+        if let Some(link) = other.link {
+            self.link = Some(link);
+        }
+    }
 }
 
 /// The bytes
@@ -597,7 +607,7 @@ impl CodeBlock {
         let mut styles = vec![];
         if let Some(lang) = &lang {
             let mut highlighter = SyntaxHighlighter::new(&lang);
-            highlighter.update(None, &Rope::from_str(code.as_str()));
+            highlighter.update(None, &Rope::from_str(code.as_str()), None);
             styles = highlighter.styles(&(0..code.len()), highlight_theme);
         };
 
@@ -1152,6 +1162,8 @@ impl BlockNode {
                 ..
             } => v_flex()
                 .id(("li", options.ix))
+                .w_full()
+                .min_w_0()
                 .when(*spread, |this| this.child(div()))
                 .children({
                     let mut items: Vec<Div> = Vec::with_capacity(children.len());
@@ -1174,19 +1186,29 @@ impl BlockNode {
                                     cx,
                                 );
 
-                                // merge content into last item.
+                                // Continuation paragraph — stack vertically below
+                                // the previous row, indented to align with the text
+                                // column (past bullet/number prefix).
                                 if last_not_list {
-                                    if let Some(item_item) = items.last_mut() {
-                                        item_item.extend(vec![
-                                            div().overflow_hidden().child(text).into_any_element(),
-                                        ]);
+                                    if let Some(preceding_row) = items.pop() {
+                                        items.push(
+                                            v_flex().child(preceding_row).child(
+                                                div()
+                                                    .w_full()
+                                                    .pl(rems(0.75))
+                                                    .overflow_hidden()
+                                                    .child(text),
+                                            ),
+                                        );
                                         continue;
                                     }
                                 }
 
                                 items.push(
                                     h_flex()
+                                        .w_full()
                                         .flex_1()
+                                        .min_w_0()
                                         .relative()
                                         .items_start()
                                         .content_start()
@@ -1220,7 +1242,9 @@ impl BlockNode {
                                                     }),
                                             )
                                         })
-                                        .child(div().flex_1().overflow_hidden().child(text)),
+                                        .child(
+                                            div().flex_1().min_w_0().overflow_hidden().child(text),
+                                        ),
                                 );
                             }
                             BlockNode::List { .. } => {
