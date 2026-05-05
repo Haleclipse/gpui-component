@@ -1,7 +1,6 @@
 use gpui::{App, SharedString};
 use std::ops::Deref;
 
-mod anchored;
 mod async_util;
 mod element_ext;
 mod event;
@@ -36,7 +35,6 @@ pub mod collapsible;
 pub mod color_picker;
 pub mod description_list;
 pub mod dialog;
-pub mod divider;
 pub mod dock;
 pub mod form;
 pub mod group_box;
@@ -59,6 +57,7 @@ pub mod rating;
 pub mod resizable;
 pub mod scroll;
 pub mod select;
+pub mod separator;
 pub mod setting;
 pub mod sheet;
 pub mod sidebar;
@@ -76,7 +75,6 @@ pub mod tooltip;
 pub mod tree;
 
 pub use crate::Disableable;
-pub(crate) use anchored::*;
 pub use element_ext::*;
 pub use event::InteractiveElementExt;
 pub use focus_trap::FocusTrapElement;
@@ -122,6 +120,7 @@ pub fn init(cx: &mut App) {
     table::init(cx);
     text::init(cx);
     tree::init(cx);
+    tooltip::init(cx);
 }
 
 #[inline]

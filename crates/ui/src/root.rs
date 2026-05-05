@@ -1,16 +1,17 @@
 use crate::{
-    ActiveTheme, Anchor, ElementExt, Placement, StyledExt,
+    ActiveTheme, ElementExt, Placement, StyledExt,
     dialog::{ANIMATION_DURATION, Dialog},
     focus_trap::FocusTrapManager,
     input::InputState,
     notification::{Notification, NotificationList},
     sheet::Sheet,
+    tooltip::TooltipOverlay,
     window_border,
 };
 use gpui::{
-    AnyView, App, AppContext, Context, DefiniteLength, Entity, FocusHandle, InteractiveElement,
-    IntoElement, KeyBinding, ParentElement as _, Pixels, Render, StyleRefinement, Styled,
-    WeakFocusHandle, Window, actions, div, prelude::FluentBuilder as _,
+    Anchor, AnyView, App, AppContext, Context, DefiniteLength, ElementId, Entity, FocusHandle,
+    InteractiveElement, IntoElement, KeyBinding, ParentElement as _, Pixels, Render,
+    StyleRefinement, Styled, WeakFocusHandle, Window, actions, div, prelude::FluentBuilder as _,
 };
 use std::{any::TypeId, rc::Rc};
 
@@ -34,6 +35,7 @@ pub struct Root {
     pub(crate) active_dialogs: Vec<ActiveDialog>,
     pub(super) focused_input: Option<Entity<InputState>>,
     pub notification: Entity<NotificationList>,
+    pub(crate) tooltip_overlay: Entity<TooltipOverlay>,
     sheet_size: Option<DefiniteLength>,
     window_shadow_size: Pixels,
     /// The focus handle that will be restored after a dialog is closed with animation.
@@ -82,6 +84,7 @@ impl Root {
             active_dialogs: Vec::new(),
             focused_input: None,
             notification: cx.new(|cx| NotificationList::new(window, cx)),
+            tooltip_overlay: cx.new(|_| TooltipOverlay::new()),
             sheet_size: None,
             window_shadow_size: window_border::SHADOW_SIZE,
             pending_focus_restore: None,
@@ -364,14 +367,29 @@ impl Root {
         cx.notify();
     }
 
+    /// Removes all notifications whose id matches `T`, including ones registered with
+    /// either [`Notification::id`] or [`Notification::id1`] (any key).
     pub fn remove_notification<T: Sized + 'static>(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Root>,
     ) {
         self.notification.update(cx, |view, cx| {
-            let id = TypeId::of::<T>();
-            view.close(id, window, cx);
+            view.close_by_type(TypeId::of::<T>(), window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Removes the notification matching the given type and element id (paired with [`Notification::id1`]).
+    pub fn remove_notification1<T: Sized + 'static>(
+        &mut self,
+        key: impl Into<ElementId>,
+        window: &mut Window,
+        cx: &mut Context<'_, Root>,
+    ) {
+        let key = key.into();
+        self.notification.update(cx, |view, cx| {
+            view.close((TypeId::of::<T>(), key), window, cx);
         });
         cx.notify();
     }
@@ -380,6 +398,12 @@ impl Root {
         self.notification
             .update(cx, |view, cx| view.clear(window, cx));
         cx.notify();
+    }
+
+    /// Get the tooltip overlay entity for this window.
+    pub(crate) fn tooltip_overlay(window: &Window, cx: &App) -> Option<Entity<TooltipOverlay>> {
+        let root = window.root::<Root>()??;
+        Some(root.read(cx).tooltip_overlay.clone())
     }
 
     /// Return the root view of the Root.
@@ -480,7 +504,8 @@ impl Render for Root {
                 .bg(cx.theme().background)
                 .text_color(cx.theme().foreground)
                 .refine_style(&self.style)
-                .child(self.view.clone()),
+                .child(self.view.clone())
+                .child(self.tooltip_overlay.clone()),
         )
     }
 }

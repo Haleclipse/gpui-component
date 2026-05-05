@@ -1,5 +1,5 @@
 use gpui::{
-    App, AppContext as _, Context, Corner, DismissEvent, Entity, IntoElement, MouseDownEvent,
+    Anchor, App, AppContext as _, Context, DismissEvent, Entity, IntoElement, MouseDownEvent,
     ParentElement as _, Pixels, Point, Render, Styled, Subscription, Window, anchored, deferred,
     div, prelude::FluentBuilder as _, px,
 };
@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Context menu for mouse right clicks.
-pub(crate) struct MouseContextMenu {
+pub(crate) struct InputContextMenu {
     editor: Entity<InputState>,
     menu: Entity<PopupMenu>,
     mouse_position: Point<Pixels>,
@@ -41,7 +41,7 @@ impl InputState {
             self.move_to(offset, None, cx);
         }
 
-        self.context_menu = Some(ContextMenu::MouseContext(self.mouse_context_menu.clone()));
+        self.context_menu_content = Some(ContextMenu::RightClick(self.context_menu.clone()));
 
         let is_code_editor = self.mode.is_code_editor();
         if is_code_editor {
@@ -55,32 +55,36 @@ impl InputState {
         let has_paste = is_enable && cx.read_from_clipboard().is_some();
 
         let action_context = self.focus_handle.clone();
-        self.mouse_context_menu.update(cx, |this, cx| {
+        self.context_menu.update(cx, |this, cx| {
             this.mouse_position = event.position;
             this.menu.update(cx, |menu, cx| {
-                let new_menu = PopupMenu::new(cx)
-                    .when(is_code_editor, |m| {
-                        m.menu_with_enable(
-                            t!("Input.Go to Definition"),
-                            Box::new(input::GoToDefinition),
-                            has_goto_definition,
-                        )
+                let new_menu = if let Some(builder) = &self.context_menu_builder {
+                    builder(PopupMenu::new(cx), window, cx)
+                } else {
+                    PopupMenu::new(cx)
+                        .when(is_code_editor, |m| {
+                            m.menu_with_enable(
+                                t!("Input.Go to Definition"),
+                                Box::new(input::GoToDefinition),
+                                has_goto_definition,
+                            )
+                            .menu_with_enable(
+                                t!("Input.Show Code Actions"),
+                                Box::new(input::ToggleCodeActions),
+                                has_code_action,
+                            )
+                            .separator()
+                        })
                         .menu_with_enable(
-                            t!("Input.Show Code Actions"),
-                            Box::new(input::ToggleCodeActions),
-                            has_code_action,
+                            t!("Input.Cut"),
+                            Box::new(input::Cut),
+                            is_enable && is_selected,
                         )
+                        .menu_with_enable(t!("Input.Copy"), Box::new(input::Copy), is_selected)
+                        .menu_with_enable(t!("Input.Paste"), Box::new(input::Paste), has_paste)
                         .separator()
-                    })
-                    .menu_with_enable(
-                        t!("Input.Cut"),
-                        Box::new(input::Cut),
-                        is_enable && is_selected,
-                    )
-                    .menu_with_enable(t!("Input.Copy"), Box::new(input::Copy), is_selected)
-                    .menu_with_enable(t!("Input.Paste"), Box::new(input::Paste), has_paste)
-                    .separator()
-                    .menu(t!("Input.Select All"), Box::new(input::SelectAll));
+                        .menu(t!("Input.Select All"), Box::new(input::SelectAll))
+                };
 
                 menu.menu_items = new_menu.menu_items;
                 menu.action_context = Some(action_context);
@@ -94,7 +98,7 @@ impl InputState {
     }
 }
 
-impl MouseContextMenu {
+impl InputContextMenu {
     pub(crate) fn new(
         editor: Entity<InputState>,
         window: &mut Window,
@@ -133,7 +137,7 @@ impl MouseContextMenu {
     }
 }
 
-impl Render for MouseContextMenu {
+impl Render for InputContextMenu {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             return div().into_any_element();
@@ -142,7 +146,7 @@ impl Render for MouseContextMenu {
         deferred(
             anchored()
                 .snap_to_window_with_margin(px(8.))
-                .anchor(Corner::TopLeft)
+                .anchor(Anchor::TopLeft)
                 .position(self.mouse_position)
                 .child(
                     div()

@@ -2,10 +2,13 @@ use std::rc::Rc;
 
 use crate::{
     ActiveTheme, Colorize as _, Disableable, FocusableExt as _, Icon, IconName, Selectable,
-    Sizable, Size, StyleSized, StyledExt, button::ButtonIcon, h_flex, tooltip::Tooltip,
+    Sizable, Size, StyleSized, StyledExt,
+    button::ButtonIcon,
+    h_flex,
+    tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
-    Action, AnyElement, App, ClickEvent, Corners, Div, Edges, ElementId, Hsla, InteractiveElement,
+    AnyElement, App, ClickEvent, Corners, Div, Edges, ElementId, Hsla, InteractiveElement,
     Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce, SharedString,
     Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _, px, relative, transparent_white,
@@ -197,8 +200,9 @@ pub struct Button {
     compact: bool,
     tooltip: Option<(
         SharedString,
-        Option<(Rc<Box<dyn Action>>, Option<SharedString>)>,
+        Option<(Rc<Box<dyn gpui::Action>>, Option<SharedString>)>,
     )>,
+    tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     on_hover: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
     loading: bool,
@@ -230,10 +234,16 @@ impl Button {
             selected: false,
             variant: ButtonVariant::default(),
             rounded: ButtonRounded::Medium,
-            border_corners: Corners::all(true),
+            border_corners: Corners {
+                top_left: true,
+                top_right: true,
+                bottom_right: true,
+                bottom_left: true,
+            },
             border_edges: Edges::all(true),
             size: Size::Medium,
             tooltip: None,
+            tooltip_builder: None,
             on_click: None,
             on_hover: None,
             loading: false,
@@ -293,7 +303,7 @@ impl Button {
     pub fn tooltip_with_action(
         mut self,
         tooltip: impl Into<SharedString>,
-        action: &dyn Action,
+        action: &dyn gpui::Action,
         context: Option<&str>,
     ) -> Self {
         self.tooltip = Some((
@@ -610,17 +620,23 @@ impl RenderOnce for Button {
                     .border_color(normal_style.border.opacity(0.8))
                     .text_color(normal_style.fg.opacity(0.8))
             })
-            .when_some(self.tooltip, |this, (tooltip, action)| {
-                this.tooltip(move |window, cx| {
-                    Tooltip::new(tooltip.clone())
-                        .when_some(action.clone(), |this, (action, context)| {
-                            this.action(
-                                action.boxed_clone().as_ref(),
-                                context.as_ref().map(|c| c.as_ref()),
-                            )
-                        })
-                        .build(window, cx)
-                })
+            .map(|this| {
+                if let Some(builder) = self.tooltip_builder {
+                    this.managed_tooltip(move |window, cx| builder(window, cx))
+                } else if let Some((tooltip, action)) = self.tooltip {
+                    this.managed_tooltip(move |window, cx| {
+                        Tooltip::new(tooltip.clone())
+                            .when_some(action.clone(), |this, (action, context)| {
+                                this.action(
+                                    action.boxed_clone().as_ref(),
+                                    context.as_ref().map(|c| c.as_ref()),
+                                )
+                            })
+                            .build(window, cx)
+                    })
+                } else {
+                    this
+                }
             })
             .focus_ring(is_focused, px(0.), window, cx)
     }

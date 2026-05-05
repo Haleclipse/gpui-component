@@ -163,6 +163,7 @@ impl Settings {
             .w(relative(1.))
             .border_0()
             .refine_style(&self.sidebar_style)
+            .collapsible(false)
             .collapsed(false)
             .header(
                 div()
@@ -175,6 +176,7 @@ impl Settings {
                     let is_page_active =
                         selected_index.page_ix == page_ix && selected_index.group_ix.is_none();
                     SidebarMenuItem::new(page.title.clone())
+                        .click_to_open(true)
                         .when_some(page.icon.clone(), |this, icon| this.icon(icon))
                         .default_open(page.default_open)
                         .active(is_page_active)

@@ -90,36 +90,143 @@ LineChart::new(data)
 
 ### BarChart
 
-A bar chart uses rectangular bars to show comparisons among categories.
+A bar chart uses rectangular bars to show comparisons among categories. Bars can be oriented vertically or horizontally via the `alignment` option.
 
 #### Basic Bar Chart
 
 ```rust
 BarChart::new(data)
-    .x(|d| d.category.clone())
-    .y(|d| d.value)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
 ```
 
 #### Bar Chart Customization
 
 ```rust
 // Custom fill colors
+//
+// The `fill` closure receives the datum, the bar's bounds (in pixel space,
+// relative to the chart), the chart's bounds, and the bar's `BarAlignment`.
+// Any value convertible to `Background` may be returned (solid color, gradient,
+// pattern, etc.).
 BarChart::new(data)
-    .x(|d| d.category.clone())
-    .y(|d| d.value)
-    .fill(|d| d.color)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .fill(|d, _bar_bounds, _chart_bounds, _alignment| d.color)
 
-// With labels on bars
+// With value labels on bars
 BarChart::new(data)
-    .x(|d| d.category.clone())
-    .y(|d| d.value)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
     .label(|d| format!("{}", d.value))
 
 // Custom tick spacing
 BarChart::new(data)
-    .x(|d| d.category.clone())
-    .y(|d| d.value)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
     .tick_margin(2)
+
+// Hide the band-axis line and labels
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .label_axis(false)
+```
+
+#### Bar Chart Gradient Fills
+
+For gradient fills aligned to the bar's orientation, use `fill_gradient`. The closure receives the datum, the chart's full data range, and a `chart_to_bar` helper that maps a chart-value coordinate to a bar-local gradient position (`0.0` is the bar's base, `1.0` is its tip). The gradient angle is derived from the bar's `BarAlignment` so stop-0 sits at the base and stop-1 at the tip.
+
+```rust
+use gpui::linear_color_stop;
+
+// Per-bar gradient: every bar fades from a translucent base to its full color
+// at the tip, regardless of its value.
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .fill_gradient(|d, _chart_range, _chart_to_bar| {
+        let c = d.color;
+        [
+            linear_color_stop(c.opacity(0.3), 0.0),
+            linear_color_stop(c, 1.0),
+        ]
+    })
+
+// Chart-wide gradient: each bar shows the slice of a single gradient
+// spanning the chart's full data range. Stops outside `[0, 1]` are clipped
+// to the bar with colors interpolated at the clip points.
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .fill_gradient(|d, chart_range, chart_to_bar| {
+        let c = d.color;
+        [
+            linear_color_stop(c.opacity(0.3), chart_to_bar(*chart_range.start())),
+            linear_color_stop(c,              chart_to_bar(*chart_range.end())),
+        ]
+    })
+```
+
+`fill` and `fill_gradient` are mutually exclusive — setting one clears the other.
+
+#### Bar Chart Alignment
+
+`BarAlignment` controls the bar orientation and the side where the baseline sits. Import it from `gpui_component::plot::shape`.
+
+```rust
+use gpui_component::plot::shape::BarAlignment;
+
+// Default: vertical bars growing upward from the bottom
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .alignment(BarAlignment::Bottom)
+
+// Vertical bars growing downward from the top
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .alignment(BarAlignment::Top)
+
+// Horizontal bars growing rightward from the left
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .alignment(BarAlignment::Left)
+
+// Horizontal bars growing leftward from the right
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .alignment(BarAlignment::Right)
+```
+
+#### Bar Chart Corner Radii
+
+Round the bar rectangles. Pass any value convertible into `Corners<Pixels>` —
+use a single `px(..)` for uniform rounding, or construct `Corners` manually to
+round only specific corners (e.g. just the tip end of each bar).
+
+```rust
+use gpui::{px, Corners};
+
+// Uniform 4px rounded corners on every bar
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .corner_radii(px(4.))
+
+// Round only the top corners (tip end for bottom-aligned bars)
+BarChart::new(data)
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .corner_radii(Corners {
+        top_left: px(4.),
+        top_right: px(4.),
+        bottom_left: px(0.),
+        bottom_right: px(0.),
+    })
 ```
 
 ### AreaChart
@@ -432,9 +539,9 @@ fn sales_dashboard(data: Vec<SalesData>, cx: &mut Context<Self>) -> impl IntoEle
             chart_container(
                 "Regional Performance",
                 BarChart::new(data)
-                    .x(|d| d.region.clone())
-                    .y(|d| d.revenue)
-                    .fill(|d| match d.region.as_str() {
+                    .band(|d| d.region.clone())
+                    .value(|d| d.revenue)
+                    .fill(|d, _, _, _| match d.region.as_str() {
                         "North" => cx.theme().chart_1,
                         "South" => cx.theme().chart_2,
                         "East" => cx.theme().chart_3,
@@ -546,9 +653,9 @@ fn stock_chart(ohlc_data: Vec<StockOHLC>, price_data: Vec<StockData>, cx: &mut C
             chart_container(
                 "Trading Volume",
                 BarChart::new(price_data)
-                    .x(|d| d.date.clone())
-                    .y(|d| d.volume as f64)
-                    .fill(|d| {
+                    .band(|d| d.date.clone())
+                    .value(|d| d.volume as f64)
+                    .fill(|d, _, _, _| {
                         if d.volume > 1000000 {
                             cx.theme().chart_1
                         } else {
@@ -584,9 +691,9 @@ let colors = [
 ];
 
 BarChart::new(data)
-    .x(|d| d.category.clone())
-    .y(|d| d.value)
-    .fill(|d| colors[d.category_index % colors.len()])
+    .band(|d| d.category.clone())
+    .value(|d| d.value)
+    .fill(|d, _, _, _| colors[d.category_index % colors.len()])
 ```
 
 ### Responsive Design
@@ -660,8 +767,8 @@ impl ChartComponent {
                 .y(|d| d.value)
                 .into_any_element(),
             ChartType::Bar => BarChart::new(self.filtered_data())
-                .x(|d| d.date.clone())
-                .y(|d| d.value)
+                .band(|d| d.date.clone())
+                .value(|d| d.value)
                 .into_any_element(),
             ChartType::Area => AreaChart::new(self.filtered_data())
                 .x(|d| d.date.clone())

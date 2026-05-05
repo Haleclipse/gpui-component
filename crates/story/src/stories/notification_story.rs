@@ -1,10 +1,10 @@
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    ParentElement, Render, Styled, Window,
+    Anchor, App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, ParentElement, Render, Styled, Window,
 };
 
 use gpui_component::{
-    ActiveTheme, Anchor, Theme, WindowExt as _,
+    ActiveTheme, Theme, WindowExt as _,
     button::{Button, ButtonVariants},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -80,11 +80,11 @@ impl Render for NotificationStory {
                 h_flex().gap_3().child(
                     Button::new("placement")
                         .outline()
-                        .label(cx.theme().notification.placement.to_string())
+                        .label(format!("{:?}", cx.theme().notification.placement))
                         .dropdown_menu(move |menu, window, cx| {
                             let menu = ANCHORS.into_iter().fold(menu, |menu, placement| {
                                 menu.item(
-                                    PopupMenuItem::new(placement.to_string())
+                                    PopupMenuItem::new(format!("{:?}", placement))
                                         .checked(cx.theme().notification.placement == placement)
                                         .on_click(window.listener_for(
                                             &view,
@@ -128,20 +128,6 @@ impl Render for NotificationStory {
                             })),
                     )
                     .child(
-                        Button::new("show-notify-error")
-                            .danger()
-                            .label("Error")
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                window.push_notification(
-                                    (
-                                        NotificationType::Error,
-                                        "There have some error occurred. Please try again later.",
-                                    ),
-                                    cx,
-                                )
-                            })),
-                    )
-                    .child(
                         Button::new("show-notify-success")
                             .success()
                             .label("Success")
@@ -168,6 +154,83 @@ impl Render for NotificationStory {
                                     cx,
                                 )
                             })),
+                    )
+                    .child(
+                        Button::new("show-notify-error")
+                            .danger()
+                            .label("Error")
+                            .on_click(cx.listener(|_, _, window, cx| {
+                                window.push_notification(
+                                    (
+                                        NotificationType::Error,
+                                        "There have some error occurred. Please try again later.",
+                                    ),
+                                    cx,
+                                )
+                            })),
+                    ),
+            )
+            .child(
+                section("Type with Title and Description")
+                    .child(
+                        Button::new("show-typed-info")
+                            .info()
+                            .label("Info")
+                            .on_click(cx.listener(|_, _, window, cx| {
+                                window.push_notification(
+                                    Notification::info(
+                                        "Your changes have been saved to the cloud \
+                                        and will sync across all of your devices.",
+                                    )
+                                    .title("All changes saved"),
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new("show-typed-success")
+                            .success()
+                            .label("Success")
+                            .on_click(cx.listener(|_, _, window, cx| {
+                                window.push_notification(
+                                    Notification::success(
+                                        "Your payment of $99.00 was processed and a \
+                                        receipt has been emailed to you.",
+                                    )
+                                    .title("Payment received"),
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new("show-typed-warning")
+                            .warning()
+                            .label("Warning")
+                            .on_click(cx.listener(|_, _, window, cx| {
+                                window.push_notification(
+                                    Notification::warning(
+                                        "Your network connection is unstable. \
+                                        Some changes may take longer to save.",
+                                    )
+                                    .title("Connection unstable"),
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        Button::new("show-typed-error")
+                            .danger()
+                            .label("Error")
+                            .on_click(cx.listener(|_, _, window, cx| {
+                                window.push_notification(
+                                    Notification::error(
+                                        "We couldn't reach the server. Check your \
+                                        internet connection and try again.",
+                                    )
+                                    .title("Request failed"),
+                                    cx,
+                                )
+                            })),
                     ),
             )
             .child(
@@ -179,7 +242,10 @@ impl Render for NotificationStory {
                             window.push_notification(
                                 Notification::info("This is a unique notification.")
                                     .id::<NotificationStory>()
-                                    .message("This is a unique notification."),
+                                    .message("This is a unique notification.")
+                                    .on_close(|_, _| {
+                                        println!("Notification closed");
+                                    }),
                                 cx,
                             )
                         })),

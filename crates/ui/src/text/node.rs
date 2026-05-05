@@ -65,7 +65,7 @@ pub(crate) enum BlockNode {
         html: bool,
         span: Option<Span>,
     },
-    Divider {
+    HorizontalRule {
         span: Option<Span>,
     },
     /// Use for to_markdown get raw definition
@@ -107,7 +107,7 @@ impl BlockNode {
             BlockNode::CodeBlock(code_block) => code_block.span,
             BlockNode::Table(table) => table.span,
             BlockNode::Break { span, .. } => *span,
-            BlockNode::Divider { span, .. } => *span,
+            BlockNode::HorizontalRule { span, .. } => *span,
             BlockNode::Definition { span, .. } => *span,
             BlockNode::Unknown { .. } => None,
         }
@@ -190,7 +190,7 @@ impl BlockNode {
             }
             BlockNode::Definition { .. }
             | BlockNode::Break { .. }
-            | BlockNode::Divider { .. }
+            | BlockNode::HorizontalRule { .. }
             | BlockNode::Unknown { .. } => {}
         }
 
@@ -1125,7 +1125,7 @@ impl BlockNode {
                     "\n".to_string()
                 }
             }
-            BlockNode::Divider { .. } => "---".to_string(),
+            BlockNode::HorizontalRule { .. } => "---".to_string(),
             BlockNode::Definition {
                 identifier,
                 url,
@@ -1336,16 +1336,17 @@ impl BlockNode {
 
                                                 cells.push(
                                                     div()
-                                                        .id("cell")
-                                                        .flex()
+                                                        .id(("cell", ix))
+                                                        .overflow_hidden()
                                                         .when(
                                                             align == ColumnumnAlign::Center,
-                                                            |this| this.justify_center(),
+                                                            |this| this.text_center(),
                                                         )
                                                         .when(
                                                             align == ColumnumnAlign::Right,
-                                                            |this| this.justify_end(),
+                                                            |this| this.text_right(),
                                                         )
+                                                        .min_w_16()
                                                         .w(Length::Definite(relative(len as f32)))
                                                         .px_2()
                                                         .py_1()
@@ -1353,7 +1354,6 @@ impl BlockNode {
                                                             this.border_r_1()
                                                                 .border_color(cx.theme().border)
                                                         })
-                                                        .truncate()
                                                         .child(
                                                             cell.children
                                                                 .render(node_cx, window, cx),
@@ -1496,9 +1496,9 @@ impl BlockNode {
             BlockNode::Table { .. } => {
                 Self::render_table(self, &options, node_cx, window, cx).into_any_element()
             }
-            BlockNode::Divider { .. } => div()
+            BlockNode::HorizontalRule { .. } => div()
                 .pb(mb)
-                .child(div().id("divider").bg(cx.theme().border).h(px(2.)))
+                .child(div().id("horizontal-rule").bg(cx.theme().border).h(px(2.)))
                 .into_any_element(),
             BlockNode::Break { .. } => div().id("break").into_any_element(),
             BlockNode::Unknown { .. } | BlockNode::Definition { .. } => div().into_any_element(),

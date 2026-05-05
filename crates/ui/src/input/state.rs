@@ -20,7 +20,7 @@ use sum_tree::Bias;
 use unicode_segmentation::*;
 
 use super::{
-    DisplayMap, blink_cursor::BlinkCursor, change::Change, element::TextElement,
+    DisplayMap, MASK_CHAR, blink_cursor::BlinkCursor, change::Change, element::TextElement,
     mask_pattern::MaskPattern, mode::InputMode, number_input,
 };
 use crate::Size;
@@ -34,9 +34,10 @@ use crate::input::{
     HoverDefinition, InlineCompletion, Lsp, Position, RopeExt as _, Selection,
     display_map::LineLayout,
     element::RIGHT_MARGIN,
-    popovers::{ContextMenu, DiagnosticPopover, HoverPopover, MouseContextMenu},
+    popovers::{ContextMenu, DiagnosticPopover, HoverPopover, InputContextMenu},
     search::{self, SearchPanel},
 };
+use crate::menu::PopupMenu;
 use crate::{Root, history::History};
 
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
@@ -343,8 +344,20 @@ pub struct InputState {
     /// Popover
     diagnostic_popover: Option<Entity<DiagnosticPopover>>,
     /// Completion/CodeAction context menu
-    pub(super) context_menu: Option<ContextMenu>,
-    pub(super) mouse_context_menu: Entity<MouseContextMenu>,
+    pub(super) context_menu_content: Option<ContextMenu>,
+    pub(super) context_menu: Entity<InputContextMenu>,
+
+    /// An optional context menu builder to allow a custom context menu on the input.
+    ///
+    /// If set, this will override the built-in context menu and ignore the value set in [`Self::enable_context_menu`].
+    pub(super) context_menu_builder:
+        Option<Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>>,
+
+    /// Whether the context menu that shows on right-click is enabled.
+    ///
+    /// This value will be ignored if a context menu builder is defined in [`Self::context_menu_builder`].
+    pub(super) enable_context_menu: bool,
+
     /// A flag to indicate if we are currently inserting a completion item.
     pub(super) completion_inserting: bool,
     pub(super) hover_popover: Option<Entity<HoverPopover>>,
@@ -359,6 +372,8 @@ pub struct InputState {
     _pending_update: bool,
     /// A flag to indicate if we should ignore the next completion event.
     pub(super) silent_replace_text: bool,
+    /// A flag to indicate if we should emit InputEvents.
+    pub(super) emit_events: bool,
 
     /// To remember the horizontal column (x-coordinate) of the cursor position for keep column for move up/down.
     ///
@@ -401,7 +416,7 @@ impl InputState {
         ];
 
         let text_style = window.text_style();
-        let mouse_context_menu = MouseContextMenu::new(cx.entity(), window, cx);
+        let mouse_context_menu = InputContextMenu::new(cx.entity(), window, cx);
 
         Self {
             focus_handle: focus_handle.clone(),
@@ -439,12 +454,15 @@ impl InputState {
             text_align: TextAlign::Left,
             lsp: Lsp::default(),
             diagnostic_popover: None,
-            context_menu: None,
-            mouse_context_menu,
+            context_menu_content: None,
+            context_menu: mouse_context_menu,
+            context_menu_builder: None,
+            enable_context_menu: true,
             completion_inserting: false,
             hover_popover: None,
             hover_definition: HoverDefinition::default(),
             silent_replace_text: false,
+            emit_events: true,
             size: Size::default(),
             _subscriptions,
             _context_menu_task: Task::ready(Ok(())),
@@ -493,6 +511,15 @@ impl InputState {
         let language: SharedString = language.into();
         self.mode = InputMode::code_editor(language);
         self.searchable = true;
+        self
+    }
+
+    /// Sets whether the context menu that shows on right-click is enabled.
+    ///
+    /// The context menu is enabled by default.
+    /// This value will be ignored if a custom context menu is defined on the input.
+    pub fn context_menu(mut self, enable: bool) -> Self {
+        self.enable_context_menu = enable;
         self
     }
 
@@ -673,8 +700,10 @@ impl InputState {
         cx: &mut Context<Self>,
     ) {
         self.history.ignore = true;
+        self.emit_events = false;
         self.replace_text(value, window, cx);
         self.history.ignore = false;
+        self.emit_events = true;
 
         // Ensure cursor to start when set text
         if self.mode.is_single_line() {
@@ -691,6 +720,7 @@ impl InputState {
         // Move scroll to top
         self.scroll_handle.set_offset(point(px(0.), px(0.)));
 
+        self.history.clear();
         cx.notify();
     }
 
@@ -1366,7 +1396,9 @@ impl InputState {
 
         // Show Mouse context menu
         if event.button == MouseButton::Right {
-            self.handle_right_click_menu(event, offset, window, cx);
+            if self.enable_context_menu || self.context_menu_builder.is_some() {
+                self.handle_right_click_menu(event, offset, window, cx);
+            }
             return;
         }
 
@@ -1396,6 +1428,19 @@ impl InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Check if mouse is within bounds
+        let within_bounds = self
+            .last_bounds
+            .as_ref()
+            .map(|bounds| bounds.contains(&event.position))
+            .unwrap_or(false);
+
+        if !within_bounds {
+            // Clear hover when mouse leaves the input
+            self.clear_hover_state(cx);
+            return;
+        }
+
         // Show diagnostic popover on mouse move
         let offset = self.index_for_mouse_position(event.position);
         self.handle_mouse_move(offset, event, window, cx);
@@ -1515,11 +1560,12 @@ impl InputState {
             row_offset_y += line_height * visible_wrap_rows;
         }
 
-        // Apart from left alignment, just leave enough space for the cursor size on the right side.
-        let safety_margin = if last_layout.text_align == TextAlign::Left {
-            RIGHT_MARGIN
-        } else {
-            CURSOR_WIDTH
+        // For Right alignment use 0 margin: the cursor indicator is clamped inside bounds
+        // in layout_cursor, so shifting the text here would cause a first-click visual jump.
+        let safety_margin = match last_layout.text_align {
+            TextAlign::Left => RIGHT_MARGIN,
+            TextAlign::Right => px(0.),
+            TextAlign::Center => CURSOR_WIDTH,
         };
         if let Some(line) = last_layout
             .lines
@@ -1659,6 +1705,30 @@ impl InputState {
         }
     }
 
+    /// Visible row range in the last laid-out viewport, `None` before first layout.
+    pub fn visible_row_range(&self) -> Option<std::ops::Range<usize>> {
+        self.last_layout.as_ref().map(|l| l.visible_range.clone())
+    }
+
+    /// Current scroll offset of the editor viewport.
+    pub fn scroll_offset(&self) -> gpui::Point<gpui::Pixels> {
+        self.scroll_handle.offset()
+    }
+
+    /// Laid-out line height; `None` before first layout.
+    pub fn line_height(&self) -> Option<gpui::Pixels> {
+        self.last_layout.as_ref().map(|l| l.line_height)
+    }
+
+    /// Returns the current selection as a byte range into the text.
+    ///
+    /// The range is empty (`start == end`) when no text is selected; in
+    /// that case the offset equals `cursor()`. Byte offsets are measured
+    /// in the underlying rope's byte units.
+    pub fn selected_range(&self) -> std::ops::Range<usize> {
+        self.selected_range.into()
+    }
+
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         // If the text is empty, always return 0
         if self.text.len() == 0 {
@@ -1706,7 +1776,7 @@ impl InputState {
                 let local_index = line_layout.closest_index_for_x(pos.x, last_layout);
                 let index = line_start_offset + local_index;
                 return if self.masked {
-                    self.text.char_index_to_offset(index)
+                    self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
                 } else {
                     index.min(self.text.len())
                 };
@@ -1716,14 +1786,15 @@ impl InputState {
             if let Some(local_index) = line_layout.closest_index_for_position(pos, last_layout) {
                 let index = line_start_offset + local_index;
                 return if self.masked {
-                    self.text.char_index_to_offset(index)
+                    self.text.char_index_to_offset(index / MASK_CHAR.len_utf8())
                 } else {
                     index.min(self.text.len())
                 };
             } else if pos.y < px(0.) {
                 // Mouse is above this line, return start of this line
                 return if self.masked {
-                    self.text.char_index_to_offset(line_start_offset)
+                    self.text
+                        .char_index_to_offset(line_start_offset / MASK_CHAR.len_utf8())
                 } else {
                     line_start_offset
                 };
@@ -1733,12 +1804,7 @@ impl InputState {
         }
 
         // Mouse is below all visible lines, return end of text
-        let index = self.text.len();
-        if self.masked {
-            self.text.char_index_to_offset(index)
-        } else {
-            index
-        }
+        self.text.len()
     }
 
     /// Returns a y offsetted point for the line origin.
@@ -1879,7 +1945,7 @@ impl InputState {
 
         self.hover_popover = None;
         self.diagnostic_popover = None;
-        self.context_menu = None;
+        self.context_menu_content = None;
         self.clear_inline_completion(cx);
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.stop(cx);
@@ -2176,7 +2242,9 @@ impl InputState {
                 }
 
                 // Trigger re-render so the new highlights are displayed.
-                _ = entity.update(cx, |_, cx| {
+                // Also update fold candidates now that the tree is ready.
+                _ = entity.update(cx, |state, cx| {
+                    state.update_fold_candidates();
                     cx.notify();
                 });
             }
@@ -2248,7 +2316,9 @@ impl EntityInputHandler for InputState {
             return;
         }
 
-        self.pause_blink_cursor(cx);
+        if self.blink_cursor.read(cx).visible() {
+            self.pause_blink_cursor(cx);
+        }
 
         let range = range_utf16
             .as_ref()
@@ -2309,7 +2379,9 @@ impl EntityInputHandler for InputState {
         if !self.silent_replace_text {
             self.handle_completion_trigger(&range, &new_text, window, cx);
         }
-        cx.emit(InputEvent::Change);
+        if self.emit_events {
+            cx.emit(InputEvent::Change);
+        }
         cx.notify();
     }
 
@@ -2494,7 +2566,7 @@ impl Render for InputState {
             .overflow_x_hidden()
             .child(TextElement::new(cx.entity().clone()).placeholder(self.placeholder.clone()))
             .children(self.diagnostic_popover.clone())
-            .children(self.context_menu.as_ref().map(|menu| menu.render()))
+            .children(self.context_menu_content.as_ref().map(|menu| menu.render()))
             .children(self.hover_popover.clone())
     }
 }

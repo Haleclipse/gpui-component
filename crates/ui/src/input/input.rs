@@ -1,13 +1,16 @@
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla, InteractiveElement as _,
-    IntoElement, IsZero, MouseButton, ParentElement as _, Rems, RenderOnce, StyleRefinement,
-    Styled, TextAlign, Window, div, px, relative,
+    AnyElement, App, Context, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla,
+    InteractiveElement as _, IntoElement, IsZero, MouseButton, ParentElement as _, Rems,
+    RenderOnce, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
 };
 
 use crate::button::{Button, ButtonVariants as _};
 use crate::input::clear_button;
 use crate::input::element::{LINE_NUMBER_RIGHT_MARGIN, RIGHT_MARGIN};
+use crate::menu::PopupMenu;
 use crate::scroll::Scrollbar;
 use crate::spinner::Spinner;
 use crate::{ActiveTheme, Colorize, v_flex};
@@ -46,6 +49,12 @@ pub struct Input {
     focus_bordered: bool,
     tab_index: isize,
     selected: bool,
+
+    /// An optional context menu builder to allow a custom context menu on the input.
+    ///
+    /// If set, this will override the built-in context menu.
+    context_menu_builder:
+        Option<Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>>,
 }
 
 impl Sizable for Input {
@@ -84,6 +93,7 @@ impl Input {
             focus_bordered: true,
             tab_index: 0,
             selected: false,
+            context_menu_builder: None,
         }
     }
 
@@ -151,25 +161,31 @@ impl Input {
         self
     }
 
-    fn render_toggle_mask_button(state: Entity<InputState>) -> impl IntoElement {
+    /// Sets the context menu for the input.
+    pub fn context_menu(
+        mut self,
+        f: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> Self {
+        self.context_menu_builder = Some(Rc::new(f));
+        self
+    }
+
+    fn render_toggle_mask_button(state: &Entity<InputState>, cx: &App) -> impl IntoElement {
+        let masked = state.read(cx).masked;
         Button::new("toggle-mask")
-            .icon(IconName::Eye)
+            .icon(if masked {
+                IconName::Eye
+            } else {
+                IconName::EyeOff
+            })
             .xsmall()
             .ghost()
             .tab_stop(false)
-            .on_mouse_down(MouseButton::Left, {
+            .on_click({
                 let state = state.clone();
                 move |_, window, cx| {
                     state.update(cx, |state, cx| {
-                        state.set_masked(false, window, cx);
-                    })
-                }
-            })
-            .on_mouse_up(MouseButton::Left, {
-                let state = state.clone();
-                move |_, window, cx| {
-                    state.update(cx, |state, cx| {
-                        state.set_masked(true, window, cx);
+                        state.set_masked(!state.masked, window, cx);
                     })
                 }
             })
@@ -256,8 +272,10 @@ impl RenderOnce for Input {
         let text_align = self.style.text.text_align.unwrap_or(TextAlign::Left);
 
         self.state.update(cx, |state, _| {
+            state.context_menu_builder = self.context_menu_builder.clone();
             state.disabled = self.disabled;
             state.size = self.size;
+
             // Only for single line mode
             if state.mode.is_single_line() {
                 state.text_align = text_align;
@@ -425,7 +443,7 @@ impl RenderOnce for Input {
                             this.child(Spinner::new().color(cx.theme().muted_foreground))
                         })
                         .when(self.mask_toggle, |this| {
-                            this.child(Self::render_toggle_mask_button(self.state.clone()))
+                            this.child(Self::render_toggle_mask_button(&self.state, cx))
                         })
                         .when(show_clear_button, |this| {
                             this.child(clear_button(cx).on_click({
