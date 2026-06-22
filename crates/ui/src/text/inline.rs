@@ -1,40 +1,21 @@
 use gpui::Corners;
 use std::{
     ops::Range,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
 use gpui::{
-    point, px, quad, App, BorderStyle, Bounds, CursorStyle, Edges, Element, ElementId,
-    GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
-    LayoutId, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, SharedString, Size,
-    StyledText, TextLayout, Window,
+    App, BorderStyle, Bounds, CursorStyle, Edges, Element, ElementId, GlobalElementId, Half,
+    HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyledText,
+    TextLayout, Window, point, px, quad,
 };
 
-use crate::{global_state::GlobalState, input::Selection, text::LinkClickFn, text::node::LinkMark, ActiveTheme};
-
-/// Inline image overlay — paints a cached image on top of invisible
-/// space-character placeholders at a given byte offset during the paint phase.
-pub(super) struct InlineOverlay {
-    /// The byte offset in the text buffer where the placeholder begins.
-    pub(super) offset: usize,
-    /// The byte length of the placeholder space characters in the text buffer.
-    pub(super) placeholder_len: usize,
-    /// The pre-fetched image data to paint.
-    pub(super) data: Arc<RenderImage>,
-    /// The size at which to paint the image.
-    pub(super) size: Size<Pixels>,
-}
-
-/// Maps a byte range in the display text to its original shortcode,
-/// used by `selected_text()` to produce correct copy/paste output.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct OverlayReplacement {
-    /// Byte range of the space placeholder in the display text.
-    pub(super) range: Range<usize>,
-    /// Original shortcode text (e.g. ":heart_eyes:").
-    pub(super) shortcode: SharedString,
-}
+use crate::{
+    ActiveTheme, WindowExt as _, global_state::GlobalState, input::Selection,
+    text::TextViewMultiClickKind, text::node::LinkMark, text::selection::word_range_at,
+};
 
 /// A inline element used to render a inline text and support selectable.
 ///
@@ -42,12 +23,9 @@ pub(super) struct OverlayReplacement {
 pub(super) struct Inline {
     id: ElementId,
     text: SharedString,
-    links: Arc<Vec<(Range<usize>, LinkMark)>>,
+    links: Rc<Vec<(Range<usize>, LinkMark)>>,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     styled_text: StyledText,
-    link_click_handler: Option<Arc<LinkClickFn>>,
-    /// Inline image overlays to paint on top of transparent placeholder text.
-    overlays: Vec<InlineOverlay>,
 
     state: Arc<Mutex<InlineState>>,
 }
@@ -59,9 +37,6 @@ pub(crate) struct InlineState {
     /// The text that actually rendering, matched with selection.
     pub(super) text: SharedString,
     pub(super) selection: Option<Selection>,
-    /// Overlay replacement map: space placeholders → original shortcodes.
-    /// Used by `selected_text()` to produce correct copy/paste output.
-    pub(super) overlay_replacements: Vec<OverlayReplacement>,
 }
 
 impl InlineState {
@@ -77,25 +52,18 @@ impl Inline {
         state: Arc<Mutex<InlineState>>,
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
-        link_click_handler: Option<Arc<LinkClickFn>>,
-        overlays: Vec<InlineOverlay>,
-        overlay_replacements: Vec<OverlayReplacement>,
     ) -> Self {
-        // Store overlay_replacements into shared InlineState so that
-        // `Paragraph::selected_text()` (which reads state externally) can
-        // map space placeholders back to original shortcodes for copy/paste.
-        let mut locked = state.lock().unwrap();
-        let text = locked.text.clone();
-        locked.overlay_replacements = overlay_replacements;
-        drop(locked);
+        let text = state
+            .lock()
+            .map(|state| state.text.clone())
+            .unwrap_or_default();
+
         Self {
             id: id.into(),
-            links: Arc::new(links),
+            links: Rc::new(links),
             highlights,
             text: text.clone(),
             styled_text: StyledText::new(text),
-            link_click_handler,
-            overlays,
             state,
         }
     }
@@ -132,6 +100,7 @@ impl Inline {
     fn layout_selections(
         &self,
         text_layout: &TextLayout,
+        bounds: &Bounds<Pixels>,
         window: &mut Window,
         cx: &mut App,
     ) -> (bool, bool, Option<Selection>) {
@@ -141,14 +110,35 @@ impl Inline {
 
         let text_view_state = text_view_state.read(cx);
         let is_selectable = text_view_state.is_selectable();
-        if !text_view_state.has_selection() {
-            return (is_selectable, false, None);
+        if !is_selectable {
+            return (false, false, None);
         }
 
-        let Some((selection_start, selection_end)) = text_view_state.selection_points() else {
+        if text_view_state.is_all_selected() {
+            return (is_selectable, true, Some((0..self.text.len()).into()));
+        }
+
+        if let Some(selection) = text_view_state.multi_click_selection() {
+            return (
+                is_selectable,
+                true,
+                selection_for_multi_click(
+                    &self.text,
+                    text_layout,
+                    *bounds,
+                    selection.pos,
+                    selection.kind,
+                )
+                .map(Selection::from),
+            );
+        }
+
+        let Some((selection_start, selection_end)) = text_view_state.selection_points(window, cx)
+        else {
             return (is_selectable, false, None);
         };
         let line_height = window.line_height();
+        let mask_bounds = window.content_mask().bounds;
 
         // Use for debug selection bounds
         // self.paint_selected_bounds(Bounds::from_corners(selection_start, selection_end), window, cx);
@@ -162,27 +152,88 @@ impl Inline {
                 continue;
             };
 
+            let next_offset = offset + c.len_utf8();
             let mut char_width = line_height.half();
-            if let Some(next_pos) = text_layout.position_for_index(offset + 1) {
+            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
                 if next_pos.y == pos.y {
                     char_width = next_pos.x - pos.x;
                 }
             }
 
-            if point_in_text_selection(pos, char_width, selection_start, selection_end, line_height)
+            let char_center = point(pos.x + char_width.half(), pos.y + line_height.half());
+            if mask_bounds.contains(&char_center)
+                && point_in_text_selection(
+                    pos,
+                    char_width,
+                    selection_start,
+                    selection_end,
+                    line_height,
+                )
             {
                 if selection.is_none() {
                     selection = Some((offset..offset).into());
                 }
 
-                let next_offset = offset + c.len_utf8();
-                selection.as_mut().unwrap().end = next_offset;
+                if let Some(selection) = selection.as_mut() {
+                    selection.end = next_offset;
+                }
             }
 
-            offset += c.len_utf8();
+            offset = next_offset;
         }
 
         (true, true, selection)
+    }
+
+    fn text_line_bounds(
+        &self,
+        text_layout: &TextLayout,
+        line_height: Pixels,
+        mask_bounds: Bounds<Pixels>,
+    ) -> Vec<Bounds<Pixels>> {
+        let mut line_bounds = Vec::new();
+        let mut current_line_y = None;
+        let mut current_bounds: Option<Bounds<Pixels>> = None;
+        let mut offset = 0;
+
+        for c in self.text.chars() {
+            let next_offset = offset + c.len_utf8();
+            let Some(pos) = text_layout.position_for_index(offset) else {
+                offset = next_offset;
+                continue;
+            };
+
+            let mut char_width = line_height.half();
+            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
+                if next_pos.y == pos.y {
+                    char_width = next_pos.x - pos.x;
+                }
+            }
+
+            let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+                .intersect(&mask_bounds);
+            if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+                if current_line_y == Some(pos.y) {
+                    if let Some(current) = current_bounds.as_mut() {
+                        *current = current.union(&bounds);
+                    }
+                } else {
+                    if let Some(current) = current_bounds.take() {
+                        line_bounds.push(current);
+                    }
+                    current_line_y = Some(pos.y);
+                    current_bounds = Some(bounds);
+                }
+            }
+
+            offset = next_offset;
+        }
+
+        if let Some(current) = current_bounds {
+            line_bounds.push(current);
+        }
+
+        line_bounds
     }
 
     /// Paint the selection background.
@@ -338,67 +389,17 @@ impl Element for Inline {
     ) {
         let current_view = window.current_view();
         let hitbox = prepaint;
-        let mut state = self.state.lock().unwrap();
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
 
         let text_layout = self.styled_text.layout().clone();
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
-        // Paint inline image overlays on top of invisible space placeholders.
-        // Each overlay corresponds to an emoji whose placeholder spaces occupy
-        // approximately the same pixel width as the emoji image.
-        if !self.overlays.is_empty() {
-            let line_height = text_layout.line_height();
-            for overlay in &self.overlays {
-                if let Some(start_pos) = text_layout.position_for_index(overlay.offset) {
-                    // Compute actual placeholder pixel width from layout
-                    let placeholder_end = overlay.offset + overlay.placeholder_len;
-                    let placeholder_width = text_layout
-                        .position_for_index(placeholder_end)
-                        .filter(|end_pos| end_pos.y == start_pos.y)
-                        .map(|end_pos| end_pos.x - start_pos.x)
-                        .unwrap_or(overlay.size.width);
-
-                    // Center the emoji image within the placeholder width
-                    let x_offset = (placeholder_width - overlay.size.width) / 2.0;
-                    let y_offset = (line_height - overlay.size.height) / 2.0;
-                    let overlay_bounds = Bounds {
-                        origin: point(
-                            start_pos.x + x_offset.max(px(0.)),
-                            start_pos.y + y_offset,
-                        ),
-                        size: overlay.size,
-                    };
-                    let _ = window.paint_image(
-                        overlay_bounds,
-                        Corners::default(),
-                        overlay.data.clone(),
-                        0,
-                        false,
-                    );
-                }
-            }
-        }
-
         // layout selections
         let (is_selectable, is_selection, selection) =
-            self.layout_selections(&text_layout, window, cx);
-
-        // Snap selection to treat each emoji placeholder as a single atomic block.
-        // If the selection partially overlaps an overlay range, extend it to cover
-        // the entire placeholder so the emoji behaves as one selectable unit.
-        let selection = selection.map(|mut sel| {
-            for overlay in &self.overlays {
-                let range_start = overlay.offset;
-                let range_end = overlay.offset + overlay.placeholder_len;
-                // Check for partial overlap
-                if sel.end > range_start && sel.start < range_end {
-                    sel.start = sel.start.min(range_start);
-                    sel.end = sel.end.max(range_end);
-                }
-            }
-            sel
-        });
+            self.layout_selections(&text_layout, &bounds, window, cx);
 
         state.selection = selection;
 
@@ -414,6 +415,67 @@ impl Element for Inline {
 
         if let Some(selection) = &state.selection {
             Self::paint_selection(selection, &text_layout, &bounds, window, cx);
+        }
+
+        if is_selectable {
+            if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
+                let text_bounds = self.text_line_bounds(
+                    &text_layout,
+                    text_layout.line_height(),
+                    window.content_mask().bounds,
+                );
+                crate::Root::register_selectable_text_inline(
+                    &text_view_state,
+                    text_bounds,
+                    window,
+                    cx,
+                );
+            }
+
+            window.on_mouse_event({
+                let hitbox = hitbox.clone();
+                let text_layout = text_layout.clone();
+                let inline_state = self.state.clone();
+                let text = self.text.clone();
+                let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+
+                move |event: &MouseDownEvent, phase, window, cx| {
+                    if !phase.bubble()
+                        || !hitbox.is_hovered(window)
+                        || event.button != MouseButton::Left
+                    {
+                        return;
+                    }
+
+                    let kind = match event.click_count {
+                        2 => TextViewMultiClickKind::Word,
+                        3 => TextViewMultiClickKind::Paragraph,
+                        _ => return,
+                    };
+
+                    let Some(range) = selection_for_multi_click(
+                        &text,
+                        &text_layout,
+                        hitbox.bounds,
+                        event.position,
+                        kind,
+                    ) else {
+                        return;
+                    };
+
+                    let selected_text = text[range.clone()].to_string();
+
+                    if let Ok(mut inline_state) = inline_state.lock() {
+                        inline_state.selection = Some(range.into());
+                    }
+                    if let Some(text_view_state) = &text_view_state {
+                        text_view_state.update(cx, |state, _| {
+                            state.set_multi_click_selection(event.position, kind, selected_text);
+                        });
+                    }
+                    cx.notify(current_view);
+                }
+            });
         }
 
         // mouse move, update hovered link
@@ -441,27 +503,52 @@ impl Element for Inline {
             window.on_mouse_event({
                 let links = self.links.clone();
                 let text_layout = text_layout.clone();
-                let link_click_handler = self.link_click_handler.clone();
                 let hitbox = hitbox.clone();
+                let text_view_state = GlobalState::global(cx).text_view_state().cloned();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
+                        return;
+                    }
+                    if text_view_state
+                        .as_ref()
+                        .is_some_and(|state| state.read(cx).has_selection(window, cx))
+                    {
                         return;
                     }
 
                     if let Some(link) =
                         Self::link_for_position(&text_layout, &links, event.position)
                     {
+                        window.end_text_selection(cx);
                         cx.stop_propagation();
-                        if let Some(handler) = &link_click_handler {
-                            handler(&link.url, window, cx);
-                        } else {
-                            cx.open_url(&link.url);
-                        }
+                        cx.open_url(&link.url);
                     }
                 }
             });
         }
+    }
+}
+
+fn selection_for_multi_click(
+    text: &str,
+    text_layout: &TextLayout,
+    bounds: Bounds<Pixels>,
+    pos: Point<Pixels>,
+    kind: TextViewMultiClickKind,
+) -> Option<std::ops::Range<usize>> {
+    if !bounds.contains(&pos) {
+        return None;
+    }
+
+    let offset = text_layout.index_for_position(pos).ok()?;
+
+    match kind {
+        TextViewMultiClickKind::Word => word_range_at(text, offset),
+        // Known limitation: a paragraph maps to a single Inline run here. When a
+        // paragraph embeds an inline image it is split into multiple Inline runs,
+        // so triple-click only selects the run on the clicked side of the image.
+        TextViewMultiClickKind::Paragraph => (!text.is_empty()).then_some(0..text.len()),
     }
 }
 
