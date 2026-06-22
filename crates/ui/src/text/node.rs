@@ -423,6 +423,9 @@ pub(crate) struct Paragraph {
     ///
     /// The key is the identifier, the value is the url.
     pub(super) link_refs: HashMap<SharedString, SharedString>,
+    /// When true, image alt text (e.g. emoji shortcodes) is included
+    /// in selected_text() output when surrounding text is selected.
+    pub(super) copy_image_alt: Arc<std::sync::atomic::AtomicBool>,
 
     pub(crate) state: Arc<Mutex<InlineState>>,
 }
@@ -432,6 +435,8 @@ impl PartialEq for Paragraph {
         self.span == other.span
             && self.children == other.children
             && self.link_refs == other.link_refs
+            && self.copy_image_alt.load(std::sync::atomic::Ordering::Relaxed)
+                == other.copy_image_alt.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -441,19 +446,33 @@ impl Paragraph {
             span: None,
             children: vec![InlineNode::new(&text)],
             link_refs: HashMap::new(),
+            copy_image_alt: Default::default(),
             state: Arc::new(Mutex::new(InlineState::default())),
         }
     }
 
     pub(super) fn selected_text(&self) -> String {
         let mut text = String::new();
+        let mut has_selection = false;
 
         for c in self.children.iter() {
+            if self.copy_image_alt.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(image) = &c.image {
+                    if let Some(alt) = &image.alt {
+                        if has_selection {
+                            text.push_str(alt.as_ref());
+                        }
+                        continue;
+                    }
+                }
+            }
+
             let Ok(state) = c.state.lock() else {
                 continue;
             };
             if let Some(selection) = &state.selection {
                 text.push_str(&state.text[selection.start..selection.end]);
+                has_selection = true;
             }
         }
 
@@ -541,6 +560,7 @@ impl Paragraph {
                 span: None,
                 children: vec![],
                 link_refs: Default::default(),
+                copy_image_alt: Default::default(),
                 state: Arc::new(Mutex::new(InlineState::default())),
             },
         )
@@ -765,6 +785,7 @@ pub(crate) struct NodeContext {
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) link_click_handler: Option<Arc<super::LinkClickFn>>,
     pub(crate) image_loader: Option<Arc<super::ImageLoaderFn>>,
+    pub(crate) copy_image_alt: bool,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -784,6 +805,11 @@ impl PartialEq for NodeContext {
 
 impl Paragraph {
     fn render(&self, node_cx: &NodeContext, _window: &mut Window, cx: &mut App) -> AnyElement {
+        self.copy_image_alt.store(
+            node_cx.copy_image_alt,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         let span = self.span;
         let children = &self.children;
 

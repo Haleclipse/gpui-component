@@ -54,6 +54,7 @@ pub struct TextView {
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     link_click_handler: Option<Arc<LinkClickFn>>,
     image_loader: Option<Arc<ImageLoaderFn>>,
+    copy_image_alt: bool,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -95,6 +96,7 @@ impl TextView {
             code_block_actions: None,
             link_click_handler: None,
             image_loader: None,
+            copy_image_alt: false,
             markdown_extensions: Arc::default(),
         }
     }
@@ -113,6 +115,7 @@ impl TextView {
             code_block_actions: None,
             link_click_handler: None,
             image_loader: None,
+            copy_image_alt: false,
             markdown_extensions: Arc::default(),
         }
     }
@@ -131,6 +134,7 @@ impl TextView {
             code_block_actions: None,
             link_click_handler: None,
             image_loader: None,
+            copy_image_alt: false,
             markdown_extensions: Arc::default(),
         }
     }
@@ -201,6 +205,13 @@ impl TextView {
         F: Fn(&str) -> Option<ImageSource> + Send + Sync + 'static,
     {
         self.image_loader = Some(Arc::new(f));
+        self
+    }
+
+    /// Include image alt text (e.g. emoji shortcodes like `:heart:`)
+    /// in copied text when the surrounding content is selected.
+    pub fn copy_image_alt(mut self, enabled: bool) -> Self {
+        self.copy_image_alt = enabled;
         self
     }
 
@@ -319,6 +330,7 @@ impl Element for TextView {
             state.code_block_actions = self.code_block_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
             state.image_loader = self.image_loader.clone();
+            state.copy_image_alt = self.copy_image_alt;
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
             state.scrollable = self.scrollable;

@@ -63,6 +63,7 @@ pub struct TextViewState {
     pub(super) code_block_actions: Option<std::sync::Arc<CodeBlockActionsFn>>,
     pub(super) link_click_handler: Option<Arc<super::LinkClickFn>>,
     pub(super) image_loader: Option<Arc<super::ImageLoaderFn>>,
+    pub(super) copy_image_alt: bool,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
     pub(super) is_selecting: bool,
@@ -150,6 +151,7 @@ impl TextViewState {
             code_block_actions: None,
             link_click_handler: None,
             image_loader: None,
+            copy_image_alt: false,
             markdown_extensions: Arc::default(),
             is_selecting: false,
             auto_scroll: AutoScroll::default(),
@@ -449,6 +451,7 @@ impl Render for TextViewState {
         node_cx.code_block_actions = self.code_block_actions.clone();
         node_cx.link_click_handler = self.link_click_handler.clone();
         node_cx.image_loader = self.image_loader.clone();
+        node_cx.copy_image_alt = self.copy_image_alt;
         node_cx.markdown_extensions = self.markdown_extensions.clone();
         node_cx.style = self.text_view_style.clone();
 
