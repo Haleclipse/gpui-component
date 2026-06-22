@@ -522,7 +522,14 @@ impl Element for Inline {
                     {
                         window.end_text_selection(cx);
                         cx.stop_propagation();
-                        cx.open_url(&link.url);
+                        let handler = text_view_state
+                            .as_ref()
+                            .and_then(|s| s.read(cx).link_click_handler.clone());
+                        if let Some(handler) = handler {
+                            handler(&link.url, window, cx);
+                        } else {
+                            cx.open_url(&link.url);
+                        }
                     }
                 }
             });

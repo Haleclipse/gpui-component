@@ -3,8 +3,8 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, InteractiveElement, IntoElement, LayoutId, ParentElement, Pixels,
-    SharedString, StyleRefinement, Styled, Window, div,
+    ImageSource, InspectorElementId, InteractiveElement, IntoElement, LayoutId, ParentElement,
+    Pixels, SharedString, StyleRefinement, Styled, Window, div,
 };
 
 use crate::StyledExt;
@@ -18,6 +18,12 @@ use crate::{global_state::GlobalState, text::TextViewStyle};
 /// Type for code block actions generator function.
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
+
+/// Type for custom link click handler.
+pub(crate) type LinkClickFn = dyn Fn(&str, &mut Window, &mut App) + Send + Sync;
+
+/// Type for custom image loader that resolves URLs to pre-fetched image data.
+pub(crate) type ImageLoaderFn = dyn Fn(&str) -> Option<ImageSource> + Send + Sync;
 
 /// A text view that can render Markdown or HTML.
 ///
@@ -46,6 +52,8 @@ pub struct TextView {
     selectable: bool,
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    link_click_handler: Option<Arc<LinkClickFn>>,
+    image_loader: Option<Arc<ImageLoaderFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -85,6 +93,8 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            link_click_handler: None,
+            image_loader: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -101,6 +111,8 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            link_click_handler: None,
+            image_loader: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -117,6 +129,8 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            link_click_handler: None,
+            image_loader: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -162,6 +176,31 @@ impl TextView {
         self.code_block_actions = Some(Arc::new(move |code_block, window, cx| {
             f(&code_block, window, cx).into_any_element()
         }));
+        self
+    }
+
+    /// Set a custom link click handler.
+    ///
+    /// By default links open with `cx.open_url()`. Provide a closure to
+    /// override this, e.g. for in-app navigation.
+    pub fn on_link_click<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&str, &mut Window, &mut App) + Send + Sync + 'static,
+    {
+        self.link_click_handler = Some(Arc::new(f));
+        self
+    }
+
+    /// Set a custom image loader.
+    ///
+    /// The closure receives the image URL and may return a custom
+    /// [`ImageSource`] (e.g. from a pre-fetched cache). When it returns
+    /// `None`, the default URL-based loading is used.
+    pub fn image_loader<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&str) -> Option<ImageSource> + Send + Sync + 'static,
+    {
+        self.image_loader = Some(Arc::new(f));
         self
     }
 
@@ -278,6 +317,8 @@ impl Element for TextView {
 
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
+            state.link_click_handler = self.link_click_handler.clone();
+            state.image_loader = self.image_loader.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
             state.scrollable = self.scrollable;

@@ -763,6 +763,8 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) link_click_handler: Option<Arc<super::LinkClickFn>>,
+    pub(crate) image_loader: Option<Arc<super::ImageLoaderFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -820,14 +822,20 @@ impl Paragraph {
                         .into_any_element(),
                     );
                 }
+                let img_source = node_cx
+                    .image_loader
+                    .as_ref()
+                    .and_then(|loader| loader(image.url.as_ref()))
+                    .unwrap_or_else(|| image.url.clone().into());
                 child_nodes.push(
-                    img(image.url.clone())
+                    img(img_source)
                         .id(ix)
                         .object_fit(ObjectFit::Contain)
                         .max_w(relative(1.))
                         .when_some(image.width, |this, width| this.w(width))
                         .when_some(image.link.clone(), |this, link| {
                             let title = image.title();
+                            let handler = node_cx.link_click_handler.clone();
                             this.cursor_pointer()
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(title.clone()).build(window, cx)
@@ -835,7 +843,11 @@ impl Paragraph {
                                 .on_click(move |_, window, cx| {
                                     window.end_text_selection(cx);
                                     cx.stop_propagation();
-                                    cx.open_url(&link.url);
+                                    if let Some(handler) = &handler {
+                                        handler(&link.url, window, cx);
+                                    } else {
+                                        cx.open_url(&link.url);
+                                    }
                                 })
                         })
                         .into_any_element(),

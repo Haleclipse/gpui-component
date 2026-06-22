@@ -5,10 +5,11 @@ use std::{
 
 use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, DefiniteLength, Element, ElementId,
-    GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _, IntoElement,
-    LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, ShapedLine, SharedString,
-    SharedUri, Size, StatefulInteractiveElement as _, Styled, StyledImage as _, TextRun, TextStyle,
-    WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
+    GlobalElementId, HighlightStyle, ImageSource, InspectorElementId, InteractiveElement as _,
+    IntoElement, LayoutId, LineFragment as WrapLineFragment, ObjectFit, Pixels, ShapedLine,
+    SharedString, SharedUri, Size, StatefulInteractiveElement as _, Styled, StyledImage as _,
+    TextRun, TextStyle, WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative,
+    size,
 };
 
 use crate::{WindowExt as _, tooltip::Tooltip};
@@ -113,8 +114,14 @@ impl InlineFlow {
         link: &Option<LinkMark>,
         title: &str,
         size: Size<Pixels>,
+        link_click_handler: &Option<Arc<super::LinkClickFn>>,
+        image_loader: &Option<Arc<super::ImageLoaderFn>>,
     ) -> AnyElement {
-        img(url.clone())
+        let img_source: ImageSource = image_loader
+            .as_ref()
+            .and_then(|loader| loader(url.as_ref()))
+            .unwrap_or_else(|| url.clone().into());
+        img(img_source)
             .id(ix)
             .object_fit(ObjectFit::Contain)
             .max_w(relative(1.))
@@ -122,12 +129,17 @@ impl InlineFlow {
             .h(size.height)
             .when_some(link.clone(), |this, link| {
                 let title = title.to_string();
+                let handler = link_click_handler.clone();
                 this.cursor_pointer()
                     .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                     .on_click(move |_, window, cx| {
                         window.end_text_selection(cx);
                         cx.stop_propagation();
-                        cx.open_url(&link.url);
+                        if let Some(handler) = &handler {
+                            handler(&link.url, window, cx);
+                        } else {
+                            cx.open_url(&link.url);
+                        }
                     })
             })
             .into_any_element()
@@ -278,12 +290,21 @@ impl Element for InlineFlow {
                     else {
                         continue;
                     };
+                    let (link_click_handler, image_loader) = crate::global_state::GlobalState::global(cx)
+                        .text_view_state()
+                        .map(|s| {
+                            let s = s.read(cx);
+                            (s.link_click_handler.clone(), s.image_loader.clone())
+                        })
+                        .unwrap_or_default();
                     let mut element = Self::image_element(
                         elements.len(),
                         url,
                         link,
                         title.as_str(),
                         fragment_size,
+                        &link_click_handler,
+                        &image_loader,
                     );
                     element.prepaint_as_root(
                         bounds.origin + origin,

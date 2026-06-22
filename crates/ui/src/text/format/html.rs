@@ -368,7 +368,6 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
                     width,
                     height,
                     title: title.map(Into::into),
-                    is_inline: is_emoji_class(attrs),
                 });
             }
             _ => {
@@ -453,12 +452,10 @@ fn parse_node(
                 let alt = attr_value(&attrs, local_name!("alt"));
                 let title = attr_value(&attrs, local_name!("title"));
                 let (width, height) = attr_width_height(&attrs);
-                let is_inline = is_emoji_class(attrs);
 
-                if is_inline {
+                if is_emoji_class(attrs) {
                     // Inline emoji: accumulate into the current paragraph
-                    // so they flow with surrounding text instead of creating
-                    // separate block-level paragraphs.
+                    // so they flow with surrounding text via InlineFlow.
                     paragraph.push_image(ImageNode {
                         url: src.into(),
                         link: None,
@@ -466,7 +463,6 @@ fn parse_node(
                         alt: alt.map(Into::into),
                         width,
                         height,
-                        is_inline,
                     });
                     None
                 } else {
@@ -482,7 +478,6 @@ fn parse_node(
                         alt: alt.map(Into::into),
                         width,
                         height,
-                        is_inline,
                     });
 
                     if children.len() > 0 {
