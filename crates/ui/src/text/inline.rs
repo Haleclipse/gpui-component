@@ -5,7 +5,7 @@ use std::{
 };
 
 use gpui::{
-    point, px, quad, App, BorderStyle, Bounds, Corners, CursorStyle, Edges, Element, ElementId,
+    point, px, quad, App, BorderStyle, Bounds, CursorStyle, Edges, Element, ElementId,
     GlobalElementId, Half, HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
     LayoutId, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, SharedString, Size,
     StyledText, TextLayout, Window,
