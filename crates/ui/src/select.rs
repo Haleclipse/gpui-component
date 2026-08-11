@@ -71,6 +71,7 @@ struct SelectOptions {
     menu_max_h: Length,
     disabled: bool,
     appearance: bool,
+    focus_bordered: bool,
 }
 
 impl Default for SelectOptions {
@@ -86,6 +87,7 @@ impl Default for SelectOptions {
             menu_max_h: rems(20.).into(),
             disabled: false,
             appearance: true,
+            focus_bordered: true,
             search_placeholder: None,
         }
     }
@@ -104,6 +106,7 @@ where
     searchable: bool,
     icon: Option<Icon>,
     title_prefix: Option<SharedString>,
+    focus_bordered: bool,
 }
 
 /// A Select element.
@@ -241,6 +244,7 @@ where
             searchable: false,
             icon: None,
             title_prefix: None,
+            focus_bordered: true,
         }
     }
 
@@ -501,7 +505,9 @@ where
                     .input_size(self.state.size)
                     .input_text_size(self.state.size)
                     .refine_style(&self.state.style)
-                    .when(outline_visible, |this| this.focused_border(cx))
+                    .when(outline_visible && self.focus_bordered, |this| {
+                        this.focused_border(cx)
+                    })
                     .when(allow_open, |this| {
                         this.on_click(cx.listener(Self::toggle_menu))
                     })
@@ -667,6 +673,12 @@ where
         self.options.appearance = appearance;
         self
     }
+
+    /// Control whether the trigger shows its focus ring (`true` by default).
+    pub fn focus_bordered(mut self, bordered: bool) -> Self {
+        self.options.focus_bordered = bordered;
+        self
+    }
 }
 
 impl<D> Sizable for Select<D>
@@ -741,6 +753,7 @@ where
             this.state.appearance = opts.appearance;
             this.icon = opts.icon;
             this.title_prefix = opts.title_prefix;
+            this.focus_bordered = opts.focus_bordered;
 
             if let Some(empty) = empty {
                 this.state.empty = Some(empty);

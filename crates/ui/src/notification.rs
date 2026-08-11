@@ -308,6 +308,9 @@ impl Render for Notification {
         };
         let has_icon = icon.is_some();
         let placement = cx.theme().notification.placement;
+        let margins = &cx.theme().notification.margins;
+        let available_width =
+            (window.viewport_size().width - margins.left - margins.right).max(px(0.));
 
         h_flex()
             .id("notification")
@@ -315,6 +318,7 @@ impl Render for Notification {
             .occlude()
             .relative()
             .w_112()
+            .max_w(available_width)
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().tokens.popover)

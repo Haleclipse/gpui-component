@@ -195,12 +195,12 @@ where
                 // or if the direct parent contains code (<script>, <style>)
                 let (skip_collapse_whitespace, contains_code) =
                     ctx.as_ref().map_or((false, false), |ctx| {
-                        let contains_code =
-                            if let NodeData::Element { name, .. } = &ctx.parent.data {
-                                contains_code(name.local.as_ref())
-                            } else {
-                                false
-                            };
+                        let contains_code = if let NodeData::Element { name, .. } = &ctx.parent.data
+                        {
+                            contains_code(name.local.as_ref())
+                        } else {
+                            false
+                        };
                         (ancestor_preserves_whitespace(ctx), contains_code)
                     });
 

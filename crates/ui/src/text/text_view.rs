@@ -513,7 +513,7 @@ mod tests {
             "unloaded inline image fallback should stay generic and compact"
         );
     }
-  
+
     #[test]
     fn plugin_accepts_text_view_plugins_beyond_markdown() {
         let view = TextView::markdown("plugin-test", "").plugin(DummyTextViewPlugin);

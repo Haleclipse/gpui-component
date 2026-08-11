@@ -290,13 +290,14 @@ impl Element for InlineFlow {
                     else {
                         continue;
                     };
-                    let (link_click_handler, image_loader) = crate::global_state::GlobalState::global(cx)
-                        .text_view_state()
-                        .map(|s| {
-                            let s = s.read(cx);
-                            (s.link_click_handler.clone(), s.image_loader.clone())
-                        })
-                        .unwrap_or_default();
+                    let (link_click_handler, image_loader) =
+                        crate::global_state::GlobalState::global(cx)
+                            .text_view_state()
+                            .map(|s| {
+                                let s = s.read(cx);
+                                (s.link_click_handler.clone(), s.image_loader.clone())
+                            })
+                            .unwrap_or_default();
                     let mut element = Self::image_element(
                         elements.len(),
                         url,

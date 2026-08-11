@@ -435,8 +435,12 @@ impl PartialEq for Paragraph {
         self.span == other.span
             && self.children == other.children
             && self.link_refs == other.link_refs
-            && self.copy_image_alt.load(std::sync::atomic::Ordering::Relaxed)
-                == other.copy_image_alt.load(std::sync::atomic::Ordering::Relaxed)
+            && self
+                .copy_image_alt
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == other
+                    .copy_image_alt
+                    .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -456,7 +460,10 @@ impl Paragraph {
         let mut has_selection = false;
 
         for c in self.children.iter() {
-            if self.copy_image_alt.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .copy_image_alt
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 if let Some(image) = &c.image {
                     if let Some(alt) = &image.alt {
                         if has_selection {
@@ -805,10 +812,8 @@ impl PartialEq for NodeContext {
 
 impl Paragraph {
     fn render(&self, node_cx: &NodeContext, _window: &mut Window, cx: &mut App) -> AnyElement {
-        self.copy_image_alt.store(
-            node_cx.copy_image_alt,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.copy_image_alt
+            .store(node_cx.copy_image_alt, std::sync::atomic::Ordering::Relaxed);
 
         let span = self.span;
         let children = &self.children;
