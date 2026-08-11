@@ -1,8 +1,8 @@
 use gpui::{
     AnyElement, App, ClickEvent, Context, DismissEvent, Edges, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, Length, ParentElement,
-    Render, RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window,
-    anchored, deferred, div, prelude::FluentBuilder, px, rems,
+    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, Length,
+    ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement,
+    Styled, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
 use rust_i18n::t;
 
@@ -32,6 +32,37 @@ pub use crate::searchable_list::SearchableListItem as SelectItem;
 pub use crate::searchable_list::SearchableListItemElement as SelectListItem;
 /// Re-exported for backward compatibility.
 pub use crate::searchable_list::SearchableVec;
+
+#[derive(IntoElement)]
+pub struct Caret {
+    size: Size,
+    color: Option<Hsla>,
+}
+
+impl Caret {
+    /// Create a select caret sized for its trigger.
+    pub fn new(size: Size) -> Self {
+        Self { size, color: None }
+    }
+
+    /// Set the caret color.
+    pub fn text_color(mut self, color: Hsla) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
+impl RenderOnce for Caret {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        Icon::new(IconName::ChevronDown)
+            .with_size(match self.size {
+                Size::XSmall => Size::XSmall,
+                Size::Small => Size::Small,
+                _ => Size::Medium,
+            })
+            .when_some(self.color, |this, color| this.text_color(color))
+    }
+}
 
 const CONTEXT: &str = "Select";
 
@@ -282,12 +313,21 @@ where
     ///
     /// Looks up the position from the delegate and sets the selected index accordingly.
     /// Passes `None` when the value is not found.
+    ///
+    /// The delegate looks the value up in its matched items, so an active search query is
+    /// cleared first to get an index into the full item list.
     pub fn set_selected_value(
         &mut self,
         selected_value: &<D::Item as SearchableListItem>::Value,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.state.list.update(cx, |list, cx| {
+            if !list.query_input.read(cx).value().is_empty() {
+                list.set_query("", window, cx);
+            }
+        });
+
         let selected_index = self
             .state
             .list
@@ -492,14 +532,6 @@ where
                             .when(self.state.disabled, |this| this.opacity(0.5))
                             .border_color(cx.theme().input)
                             .rounded(cx.theme().radius)
-                            .when(cx.theme().shadow, |this| this.shadow_xs())
-                    })
-                    .map(|this| {
-                        if self.state.disabled {
-                            this.shadow_none()
-                        } else {
-                            this
-                        }
                     })
                     .overflow_hidden()
                     .input_size(self.state.size)
@@ -538,11 +570,16 @@ where
                             })
                             .when(!show_clean, |this| {
                                 let icon = match self.icon.clone() {
-                                    Some(icon) => icon,
-                                    None => Icon::new(IconName::ChevronDown),
+                                    Some(icon) => icon
+                                        .xsmall()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .into_any_element(),
+                                    None => Caret::new(self.state.size)
+                                        .text_color(cx.theme().muted_foreground)
+                                        .into_any_element(),
                                 };
 
-                                this.child(icon.xsmall().text_color(cx.theme().muted_foreground))
+                                this.child(icon)
                             }),
                     )
                     .on_prepaint({
@@ -564,7 +601,7 @@ where
                                     v_flex()
                                         .occlude()
                                         .mt_1p5()
-                                        .bg(cx.theme().tokens.background)
+                                        .bg(cx.theme().tokens.popover)
                                         .border_1()
                                         .border_color(cx.theme().border)
                                         .rounded(popup_radius)
@@ -783,7 +820,7 @@ mod tests {
 
     use crate::{
         IndexPath,
-        searchable_list::SearchableVec,
+        searchable_list::{SearchableListDelegate as _, SearchableVec},
         select::{SelectGroup, SelectState},
     };
 
@@ -818,6 +855,53 @@ mod tests {
 
             assert_eq!(state.read(cx).selected_index(cx), Some(initial));
             assert_eq!(state.read(cx).selected_value(), Some(&"Blueberry"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_select_set_selected_value_clears_search_query(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let items = SearchableVec::new(vec!["Rust", "Go", "C++"]);
+            let state = cx.new(|cx| SelectState::new(items, None, window, cx).searchable(true));
+            let list = state.read(cx).state.list.clone();
+
+            list.update(cx, |list, cx| list.set_query("Rust", window, cx));
+            assert_eq!(list.read(cx).delegate().delegate.items_count(0), 1);
+
+            state.update(cx, |state, cx| {
+                state.set_selected_value(&"Go", window, cx);
+            });
+
+            assert_eq!(state.read(cx).selected_value(), Some(&"Go"));
+            assert_eq!(state.read(cx).selected_index(cx), Some(IndexPath::new(1)));
+            assert_eq!(list.read(cx).query_input.read(cx).value(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn test_select_set_selected_value_clears_grouped_search_query(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let mut groups: SearchableVec<SelectGroup<&'static str>> = SearchableVec::new(vec![]);
+            groups.push(SelectGroup::new("A").items(["Apple", "Avocado"]));
+            groups.push(SelectGroup::new("B").items(["Banana", "Blueberry"]));
+
+            let state = cx.new(|cx| SelectState::new(groups, None, window, cx).searchable(true));
+            let list = state.read(cx).state.list.clone();
+
+            list.update(cx, |list, cx| list.set_query("Blue", window, cx));
+            state.update(cx, |state, cx| {
+                state.set_selected_value(&"Banana", window, cx);
+            });
+
+            assert_eq!(state.read(cx).selected_value(), Some(&"Banana"));
+            assert_eq!(
+                state.read(cx).selected_index(cx),
+                Some(IndexPath::new(0).section(1)),
+            );
         });
     }
 }

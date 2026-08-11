@@ -11,6 +11,8 @@ mod icon;
 mod index_path;
 #[cfg(any(feature = "inspector", debug_assertions))]
 mod inspector;
+#[cfg(all(target_os = "macos", not(test)))]
+mod macos_accessibility;
 mod root;
 mod styled;
 mod time;

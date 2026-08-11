@@ -9,11 +9,13 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     list::{List, ListDelegate, ListItem, ListState},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     popover::Popover,
     separator::Separator,
     v_flex,
 };
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::section;
 
@@ -340,6 +342,46 @@ impl Render for PopoverStory {
                 ),
             )
             .child(
+                section("Async Submenu")
+                    .child(
+                        Button::new("async-menu")
+                            .outline()
+                            .label("Async Menu")
+                            .dropdown_menu(|menu, window, cx| {
+                                // The submenu is attached as a plain menu value, its
+                                // content is loaded asynchronously via `rebuild`.
+                                let submenu = PopupMenu::build(window, cx, |menu, _, _| {
+                                    menu.label("Loading...")
+                                });
+
+                                cx.spawn_in(window, {
+                                    let submenu = submenu.clone();
+                                    async move |_, cx| {
+                                        cx.background_executor()
+                                            .timer(Duration::from_secs(1))
+                                            .await;
+                                        _ = submenu.update_in(cx, |menu, window, cx| {
+                                            menu.rebuild(window, cx, |menu, _, _| {
+                                                (1..=3).fold(menu, |menu, ix| {
+                                                    menu.menu(
+                                                        format!("Loaded Item {}", ix),
+                                                        Box::new(Info(ix)),
+                                                    )
+                                                })
+                                            });
+                                        });
+                                    }
+                                })
+                                .detach();
+
+                                menu.menu("Copy", Box::new(Copy))
+                                    .separator()
+                                    .item(PopupMenuItem::submenu("Async Submenu", submenu))
+                            }),
+                    )
+                    .child(self.message.clone()),
+            )
+            .child(
                 section("Popover Anchor")
                     .min_h(px(360.))
                     .v_flex()
@@ -353,20 +395,20 @@ impl Render for PopoverStory {
                                         .max_w(px(600.))
                                         .anchor(Anchor::TopLeft)
                                         .trigger(Button::new("btn").outline().label("TopLeft"))
-                                        .child("This is a Popover on the Top Left."),
+                                        .child("Anchored to the trigger's top-left."),
                                 )
                                 .child(
                                     Popover::new("anchor-top-center")
                                         .max_w(px(600.))
                                         .anchor(Anchor::TopCenter)
                                         .trigger(Button::new("btn").outline().label("TopCenter"))
-                                        .child("This is a Popover on the Top Center."),
+                                        .child("Anchored to the trigger's top-center."),
                                 )
                                 .child(
                                     Popover::new("anchor-top-right")
                                         .anchor(Anchor::TopRight)
                                         .trigger(Button::new("btn").outline().label("TopRight"))
-                                        .child("This is a Popover on the Top Right."),
+                                        .child("Anchored to the trigger's top-right."),
                                 ),
                         ),
                     )
@@ -379,19 +421,19 @@ impl Render for PopoverStory {
                                     Popover::new("anchor-bottom-left")
                                         .trigger(Button::new("btn").outline().label("BottomLeft"))
                                         .anchor(Anchor::BottomLeft)
-                                        .child("This is a Popover on the Bottom Left."),
+                                        .child("Anchored to the trigger's bottom-left."),
                                 )
                                 .child(
                                     Popover::new("anchor-bottom-center")
                                         .trigger(Button::new("btn").outline().label("BottomCenter"))
                                         .anchor(Anchor::BottomCenter)
-                                        .child("This is a Popover on the Bottom Center."),
+                                        .child("Anchored to the trigger's bottom-center."),
                                 )
                                 .child(
                                     Popover::new("anchor-bottom-right")
                                         .anchor(Anchor::BottomRight)
                                         .trigger(Button::new("btn").outline().label("BottomRight"))
-                                        .child("This is a Popover on the Bottom Right."),
+                                        .child("Anchored to the trigger's bottom-right."),
                                 ),
                         ),
                     ),

@@ -11,6 +11,7 @@ use ropey::Rope;
 
 use super::fold_map::FoldMap;
 use super::folding::FoldRange;
+pub use super::text_wrapper::WrappingIndent;
 use super::text_wrapper::{LineItem, WrapDisplayPoint};
 use super::wrap_map::WrapMap;
 use super::{BufferPoint, DisplayPoint};
@@ -113,6 +114,18 @@ impl DisplayMap {
     #[inline]
     pub fn is_buffer_line_hidden(&self, line: usize) -> bool {
         self.buffer_line_to_display_row_range(line).is_none()
+    }
+
+    /// First display row of a buffer line. If the line is fully folded, returns the
+    /// nearest visible display row.
+    pub fn buffer_line_to_display_row(&self, line: usize) -> usize {
+        match self.buffer_line_to_display_row_range(line) {
+            Some(range) => range.start,
+            None => {
+                let wrap_row = self.wrap_map.buffer_line_to_first_wrap_row(line);
+                self.fold_map.nearest_visible_display_row(wrap_row)
+            }
+        }
     }
 
     /// Set fold candidates (from tree-sitter/LSP)
@@ -218,6 +231,12 @@ impl DisplayMap {
         self.rebuild_fold_projection();
     }
 
+    /// Set the wrapping indent for continuation lines.
+    pub fn set_wrapping_indent(&mut self, wrapping_indent: WrappingIndent, cx: &mut App) {
+        self.wrap_map.set_wrapping_indent(wrapping_indent, cx);
+        self.rebuild_fold_projection();
+    }
+
     /// Set font parameters
     pub fn set_font(&mut self, font: Font, font_size: Pixels, cx: &mut App) {
         self.wrap_map.set_font(font, font_size, cx);
@@ -295,15 +314,15 @@ impl DisplayMap {
     /// Get the longest row index (by byte length).
     #[inline]
     pub(crate) fn longest_row(&self) -> usize {
-        self.wrap_map.wrapper().longest_row.row
+        self.wrap_map.wrapper().longest_row()
     }
 
     // ==================== Access Methods ====================
 
-    /// Get access to line items (for rendering)
+    /// Get the line item by buffer row index.
     #[inline]
-    pub(crate) fn lines(&self) -> &[LineItem] {
-        self.wrap_map.lines()
+    pub(crate) fn line(&self, row: usize) -> Option<&LineItem> {
+        self.wrap_map.line(row)
     }
 
     /// Get the rope text

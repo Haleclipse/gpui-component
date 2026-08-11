@@ -1,17 +1,18 @@
 use std::rc::Rc;
 
 use crate::{
-    ActiveTheme, Colorize as _, Disableable, FocusableExt as _, Icon, IconName, Selectable,
-    Sizable, Size, StyleSized, StyledExt,
+    ActiveTheme, Colorize as _, Disableable, FocusableExt as _, Icon, Selectable, Sizable, Size,
+    StyleSized, StyledExt,
     button::ButtonIcon,
     h_flex,
+    select::Caret,
     tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
     AnyElement, App, Background, ClickEvent, Corners, Div, Edges, ElementId, Hsla,
     InteractiveElement, Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
-    SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, px, relative, transparent_white,
+    Role, SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled, Window,
+    div, prelude::FluentBuilder as _, px, relative, transparent_white,
 };
 
 #[derive(Default, Clone, Copy)]
@@ -190,6 +191,7 @@ pub struct Button {
     children: Vec<AnyElement>,
     disabled: bool,
     pub(crate) selected: bool,
+    toggled: Option<bool>,
     variant: ButtonVariant,
     rounded: ButtonRounded,
     outline: bool,
@@ -232,6 +234,7 @@ impl Button {
             label: None,
             disabled: false,
             selected: false,
+            toggled: None,
             variant: ButtonVariant::default(),
             rounded: ButtonRounded::Medium,
             border_corners: Corners {
@@ -284,6 +287,12 @@ impl Button {
     /// Set label to the Button, if no label is set, the button will be in Icon Button mode.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Set the developer-assigned identifier exposed to accessibility clients.
+    pub fn accessibility_id(mut self, id: impl Into<SharedString>) -> Self {
+        self.base = self.base.accessibility_id(id);
         self
     }
 
@@ -373,14 +382,34 @@ impl Button {
         self
     }
 
+    /// Expose this button as a toggle button to assistive technology, with
+    /// `toggled` as its pressed state.
+    ///
+    /// Only affects accessibility metadata. Use [`Selectable::selected`] for
+    /// the selected styling, and call this in addition when the button really
+    /// is a toggle, otherwise the button stays an ordinary push button.
+    pub fn toggled(mut self, toggled: bool) -> Self {
+        self.toggled = Some(toggled);
+        self
+    }
+
+    /// Whether the button responds to the pointer at all.
+    ///
+    /// A loading button is as inert as a disabled one, it just keeps looking
+    /// like itself instead of taking the disabled styling.
+    #[inline]
+    fn interactive(&self) -> bool {
+        !(self.disabled || self.loading)
+    }
+
     #[inline]
     fn clickable(&self) -> bool {
-        !(self.disabled || self.loading) && self.on_click.is_some()
+        self.interactive() && self.on_click.is_some()
     }
 
     #[inline]
     fn hoverable(&self) -> bool {
-        !(self.disabled || self.loading) && self.on_hover.is_some()
+        self.interactive() && self.on_hover.is_some()
     }
 }
 
@@ -438,13 +467,14 @@ impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let style: ButtonVariant = self.variant;
         let clickable = self.clickable();
-        let is_disabled = self.disabled;
+        let interactive = self.interactive();
         let hoverable = self.hoverable();
         let normal_style = style.normal(self.outline, cx);
         let icon_size = match self.size {
             Size::Size(v) => Size::Size(v * 0.75),
             _ => self.size,
         };
+        let has_content = self.icon.is_some() || self.label.is_some() || !self.children.is_empty();
 
         let focus_handle = window
             .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
@@ -461,6 +491,21 @@ impl RenderOnce for Button {
         };
 
         self.base
+            .role(if self.variant.is_link() {
+                Role::Link
+            } else {
+                Role::Button
+            })
+            .when_some(self.label.as_ref(), |this, label| {
+                this.aria_label(label.clone())
+            })
+            .when_some(self.toggled, |this, toggled| {
+                this.aria_toggled(if toggled {
+                    gpui::accesskit::Toggled::True
+                } else {
+                    gpui::accesskit::Toggled::False
+                })
+            })
             .when(!self.disabled, |this| {
                 this.track_focus(
                     &focus_handle
@@ -474,7 +519,10 @@ impl RenderOnce for Button {
             .items_center()
             .justify_center()
             .cursor_default()
-            .when(self.variant.is_link(), |this| this.cursor_pointer())
+            .when(
+                interactive && (self.variant.is_link() || self.variant.is_text()),
+                |this| this.cursor_pointer(),
+            )
             .when(cx.theme().shadow && normal_style.shadow, |this| {
                 this.shadow_xs()
             })
@@ -494,11 +542,15 @@ impl RenderOnce for Button {
                         Size::XSmall => this.h_5().px_1().when(self.compact, |this| this.min_w_5()),
                         Size::Small => this
                             .h_6()
-                            .px_3()
+                            .px_2()
                             .when(self.compact, |this| this.min_w_6().px_1p5()),
-                        _ => this
+                        Size::Medium => this
                             .h_8()
-                            .px_4()
+                            .px_2p5()
+                            .when(self.compact, |this| this.min_w_8().px_2()),
+                        Size::Large => this
+                            .h_8()
+                            .px_3()
                             .when(self.compact, |this| this.min_w_8().px_2()),
                     }
                 }
@@ -532,17 +584,21 @@ impl RenderOnce for Button {
                 this.border_color(normal_style.border)
                     .bg(normal_style.bg)
                     .when(normal_style.underline, |this| this.text_decoration_1())
-                    .hover(|this| {
-                        let hover_style = style.hovered(self.outline, cx);
-                        this.bg(hover_style.bg)
-                            .border_color(hover_style.border)
-                            .text_color(hover_style.fg)
-                    })
-                    .active(|this| {
-                        let active_style = style.active(self.outline, cx);
-                        this.bg(active_style.bg)
-                            .border_color(active_style.border)
-                            .text_color(active_style.fg)
+                    // A loading button keeps its normal colors, but must not react
+                    // to the pointer, it is not waiting for another click.
+                    .when(interactive, |this| {
+                        this.hover(|this| {
+                            let hover_style = style.hovered(self.outline, cx);
+                            this.bg(hover_style.bg)
+                                .border_color(hover_style.border)
+                                .text_color(hover_style.fg)
+                        })
+                        .active(|this| {
+                            let active_style = style.active(self.outline, cx);
+                            this.bg(active_style.bg)
+                                .border_color(active_style.border)
+                                .text_color(active_style.fg)
+                        })
                     })
             })
             .when(self.disabled, |this| {
@@ -552,11 +608,17 @@ impl RenderOnce for Button {
                     .border_color(disabled_style.border)
                     .shadow_none()
             })
+            // Fade the whole button while loading, so every variant is dimmed by
+            // the same amount. Fading `bg`, `border` and `fg` one by one instead
+            // only shows up on variants that have a background to begin with:
+            // `Ghost`, `Link` and `Text` are transparent, so an alpha on their
+            // background changes nothing.
+            .when(self.loading && !self.disabled, |this| this.opacity(0.8))
             .refine_style(&self.style)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                // Stop handle any click event when disabled.
-                // To avoid handle dropdown menu open when button is disabled.
-                if is_disabled {
+                // Stop handle any click event when disabled or loading.
+                // To avoid handle dropdown menu open when button is not interactive.
+                if !interactive {
                     cx.stop_propagation();
                     return;
                 }
@@ -608,20 +670,9 @@ impl RenderOnce for Button {
                     })
                     .children(self.children)
                     .when(self.dropdown_caret, |this| {
-                        this.justify_between().child(
-                            Icon::new(IconName::ChevronDown).xsmall().text_color(
-                                match self.disabled {
-                                    true => normal_style.fg.opacity(0.3),
-                                    false => normal_style.fg.opacity(0.5),
-                                },
-                            ),
-                        )
+                        this.when(has_content, |this| this.justify_between())
+                            .child(Caret::new(self.size).text_color(normal_style.fg.opacity(0.75)))
                     })
-            })
-            .when(self.loading && !self.disabled, |this| {
-                this.bg(normal_style.bg.opacity(0.8))
-                    .border_color(normal_style.border.opacity(0.8))
-                    .text_color(normal_style.fg.opacity(0.8))
             })
             .map(|this| {
                 if let Some(builder) = self.tooltip_builder {
@@ -798,8 +849,8 @@ impl ButtonVariant {
                 }
             }
             Self::Link => cx.theme().link,
-            Self::Text => cx.theme().foreground,
-            Self::Custom(colors) => colors.color,
+            Self::Text => cx.theme().foreground.opacity(0.9),
+            Self::Custom(colors) => colors.foreground,
         }
     }
 
@@ -854,10 +905,8 @@ impl ButtonVariant {
         }
     }
 
-    fn shadow(&self, outline: bool, _: &App) -> bool {
+    fn shadow(&self, _outline: bool, _: &App) -> bool {
         match self {
-            Self::Default => true,
-            Self::Primary | Self::Secondary | Self::Danger => outline,
             Self::Custom(c) => c.shadow,
             _ => false,
         }
@@ -930,12 +979,7 @@ impl ButtonVariant {
                     cx.theme().tokens.button_info_hover.into()
                 }
             }
-            Self::Custom(colors) => if outline {
-                colors.color.mix_oklab(cx.theme().transparent, 0.2)
-            } else {
-                colors.color.mix_oklab(cx.theme().transparent, 0.3)
-            }
-            .into(),
+            Self::Custom(colors) => colors.hover.into(),
             Self::Ghost => if cx.theme().mode.is_dark() {
                 cx.theme().secondary.lighten(0.1).opacity(0.8)
             } else {
@@ -949,6 +993,7 @@ impl ButtonVariant {
         let border = self.border_color(outline, cx);
         let fg = match self {
             Self::Link => cx.theme().link_hover,
+            Self::Text => cx.theme().foreground,
             _ => self.text_color(outline, cx),
         };
 
@@ -1021,7 +1066,7 @@ impl ButtonVariant {
                     cx.theme().tokens.button_info_active.into()
                 }
             }
-            Self::Custom(colors) => colors.color.mix_oklab(cx.theme().transparent, 0.4).into(),
+            Self::Custom(colors) => colors.active.into(),
             Self::Link => cx.theme().transparent.into(),
             Self::Text => cx.theme().transparent.into(),
         };
@@ -1167,6 +1212,7 @@ mod tests {
         assert!(!button.loading);
         assert!(!button.disabled);
         assert!(!button.selected);
+        assert_eq!(button.toggled, None);
         assert_eq!(button.tab_index, 1);
         assert!(button.tab_stop);
         assert!(!button.dropdown_caret);
@@ -1186,6 +1232,124 @@ mod tests {
         // Loading button should not be clickable
         let loading = Button::new("test").loading(true).on_click(|_, _, _| {});
         assert!(!loading.clickable());
+    }
+
+    /// A loading button must be as inert as a disabled one. `interactive` is what
+    /// gates the hover and active styling, the `cursor_pointer` of link buttons and
+    /// the `mouse_down` handler, none of which depend on a listener being set.
+    #[gpui::test]
+    fn test_button_loading_is_not_interactive(_cx: &mut gpui::TestAppContext) {
+        assert!(Button::new("test").interactive());
+        assert!(!Button::new("test").loading(true).interactive());
+        assert!(!Button::new("test").disabled(true).interactive());
+        assert!(
+            !Button::new("test")
+                .loading(true)
+                .disabled(true)
+                .interactive()
+        );
+
+        // Loading gates hovering even when an `on_hover` listener is set.
+        let loading = Button::new("test").loading(true).on_hover(|_, _, _| {});
+        assert!(!loading.hoverable());
+    }
+
+    /// `selected` is styling only; the toggle state must be opted into, so that
+    /// ordinary buttons are not announced as toggle buttons.
+    #[gpui::test]
+    fn test_button_toggle_state_is_opt_in(cx: &mut gpui::TestAppContext) {
+        use crate::ElementExt as _;
+        use gpui::{Element as _, IntoElement as _, Render, accesskit::Toggled};
+        use std::sync::{Arc, Mutex};
+
+        type States = Arc<Mutex<Vec<Option<Toggled>>>>;
+
+        struct ButtonA11yProbe {
+            states: States,
+        }
+
+        impl Render for ButtonA11yProbe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let states = self.states.clone();
+                div().on_prepaint(move |_, window, cx| {
+                    let mut toggled_of = |button: Button| {
+                        let mut node = gpui::accesskit::Node::new(Role::Button);
+                        button
+                            .render(window, cx)
+                            .into_element()
+                            .write_a11y_info(&mut node);
+                        node.toggled()
+                    };
+
+                    *states.lock().unwrap() = vec![
+                        toggled_of(Button::new("ordinary").label("Ordinary")),
+                        toggled_of(Button::new("selected").label("Selected").selected(true)),
+                        toggled_of(Button::new("off").label("Off").toggled(false)),
+                        toggled_of(Button::new("on").label("On").toggled(true)),
+                    ];
+                })
+            }
+        }
+
+        cx.update(crate::init);
+        let states: States = Arc::new(Mutex::new(Vec::new()));
+        let captured = states.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| ButtonA11yProbe { states });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![None, None, Some(Toggled::False), Some(Toggled::True)]
+        );
+    }
+
+    #[gpui::test]
+    fn test_button_emits_accessibility_id(cx: &mut gpui::TestAppContext) {
+        use crate::ElementExt as _;
+        use gpui::{Element as _, IntoElement as _, Render};
+        use std::sync::{Arc, Mutex};
+
+        type AuthorIds = Arc<Mutex<Vec<Option<String>>>>;
+
+        struct ButtonA11yProbe {
+            author_ids: AuthorIds,
+        }
+
+        impl Render for ButtonA11yProbe {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let author_ids = self.author_ids.clone();
+                div().on_prepaint(move |_, window, cx| {
+                    let mut author_id_of = |button: Button| {
+                        let mut node = gpui::accesskit::Node::new(Role::Button);
+                        button
+                            .render(window, cx)
+                            .into_element()
+                            .write_a11y_info(&mut node);
+                        node.author_id().map(ToOwned::to_owned)
+                    };
+
+                    *author_ids.lock().unwrap() = vec![
+                        author_id_of(Button::new("ordinary")),
+                        author_id_of(Button::new("identified").accessibility_id("toolbar.export")),
+                    ];
+                })
+            }
+        }
+
+        cx.update(crate::init);
+        let author_ids: AuthorIds = Arc::new(Mutex::new(Vec::new()));
+        let captured = author_ids.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| ButtonA11yProbe { author_ids });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![None, Some("toolbar.export".into())]
+        );
     }
 
     #[gpui::test]

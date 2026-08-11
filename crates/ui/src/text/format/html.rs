@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use gpui::{DefiniteLength, SharedString, px, relative};
+use gpui::{DefiniteLength, Hsla, SharedString, px, relative};
 use html5ever::tendril::TendrilSink;
 use html5ever::{LocalName, ParseOpts, local_name, parse_document};
 use markup5ever_rcdom::{Node, NodeData, RcDom};
@@ -111,6 +111,31 @@ fn is_emoji_class(attrs: &RefCell<Vec<html5ever::Attribute>>) -> bool {
                 .any(|cls| cls == "emoji" || cls == "emoji-only")
         })
         .unwrap_or(false)
+}
+
+/// Get the highlight background color for a `<mark>` element.
+///
+/// Reads the `color` attribute first, then the `background-color` declaration
+/// from the `style` attribute. Color values are parsed by [`crate::try_parse_color`],
+/// supporting hex (`#3366ff`) and Tailwind expressions (`blue`, `blue-200`, `blue/30`).
+fn mark_color(attrs: &RefCell<Vec<html5ever::Attribute>>) -> Option<Hsla> {
+    let color_attr = attrs.borrow().iter().find_map(|attr| {
+        if &*attr.name.local == "color" {
+            Some(attr.value.to_string())
+        } else {
+            None
+        }
+    });
+
+    if let Some(value) = color_attr
+        && let Ok(color) = crate::try_parse_color(value.trim())
+    {
+        return Some(color);
+    }
+
+    style_attrs(attrs)
+        .get("background-color")
+        .and_then(|v| crate::try_parse_color(v.trim()).ok())
 }
 
 /// Get style properties to HashMap
@@ -333,6 +358,14 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
             }
             local_name!("code") => {
                 merge_children_with_mark(node, paragraph, Some(TextMark::default().code()));
+            }
+            local_name!("mark") => {
+                let color = mark_color(&attrs).unwrap_or_else(|| crate::yellow(200));
+                merge_children_with_mark(
+                    node,
+                    paragraph,
+                    Some(TextMark::default().highlight(color)),
+                );
             }
             local_name!("a") => {
                 let link_mark = LinkMark {
@@ -579,7 +612,6 @@ fn parse_node(
                     let code_block = BlockNode::CodeBlock(CodeBlock::new(
                         code_text.into(),
                         lang.map(SharedString::from),
-                        &cx.style.highlight_theme,
                         None::<node::Span>,
                     ));
                     if children.is_empty() {
@@ -803,6 +835,20 @@ mod tests {
     #[test]
     fn test_trim_text() {
         assert_eq!(trim_text("  \n\tHello world \t\r "), " Hello world ",);
+    }
+
+    #[test]
+    fn test_mark() {
+        let mut cx = NodeContext::default();
+
+        // `<mark>` is rendered as a highlight, kept as `==...==` in markdown.
+        let html = r#"<p>Hello <mark>world</mark></p>"#;
+        let node = super::parse(html, &mut cx).unwrap();
+        assert_eq!(node.to_markdown(), "Hello ==world==");
+
+        let html = r#"<p><mark color="blue">blue</mark> and <mark style="background-color: #336699">hex</mark></p>"#;
+        let node = super::parse(html, &mut cx).unwrap();
+        assert_eq!(node.to_markdown(), "==blue== and ==hex==");
     }
 
     #[test]
